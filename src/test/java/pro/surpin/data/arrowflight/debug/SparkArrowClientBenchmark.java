@@ -10,6 +10,7 @@ import pro.surpin.data.arrowflight.server.services.ClusterService;
 import pro.surpin.data.arrowflight.server.services.ExecutionService;
 import pro.surpin.data.arrowflight.server.services.MetadataService;
 import pro.surpin.data.arrowflight.server.services.QueryPlanner;
+import pro.surpin.data.arrowflight.server.storage.HadoopDataStore;
 import org.apache.arrow.flight.*;
 import org.apache.arrow.flight.sql.FlightSqlClient;
 import org.apache.arrow.memory.BufferAllocator;
@@ -287,7 +288,8 @@ public class SparkArrowClientBenchmark {
         System.setProperty("hazelcastPort", String.valueOf(port + 1));
         AppConfig appConfig = ConfigAdapter.getConfig();
 
-        ParquetAdapter parquetAdapter = new ParquetAdapter(appConfig, fs);
+        ParquetAdapter parquetAdapter = new ParquetAdapter(appConfig,
+                new HadoopDataStore(fs, appConfig.dataDir(), "localhost"));
         HazelcastAdapter hazelcastAdapter = new HazelcastAdapter(appConfig);
         DuckDbAdapter duckDbAdapter = new DuckDbAdapter(appConfig, Executors.newCachedThreadPool());
         MetadataService metadataService = new MetadataService(parquetAdapter);
