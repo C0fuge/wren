@@ -13,6 +13,7 @@
     <name>Arrow Flight Spark Connector</name>
     <properties>
         <netty.version>4.2.19.Final</netty.version>
+        <jackson.version>2.21.8</jackson.version>
     </properties>
     <!-- One Netty version for Arrow, gRPC, Spark and the server under test (the epoll transport
          fails on a mix of 4.1 and 4.2 modules); as in flight-server. -->
@@ -22,6 +23,16 @@
                 <groupId>io.netty</groupId>
                 <artifactId>netty-bom</artifactId>
                 <version>${netty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- One Jackson version, as in flight-client-core. The shaded jar relocates it, so the
+                 connector keeps it while Spark 3.5 runs its own 2.15 (and the BOM lifts the Scala
+                 module of the provided Spark to the same version for the tests). -->
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -76,17 +87,14 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.15.3</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>2.15.3</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
-            <version>2.15.3</version>
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
@@ -196,6 +204,14 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
+                            <!-- Spark 3.5 puts its Jackson 2.15 first on the classpath: relocated, the
+                                 connector (Arrow, client core) runs on the version it was built with. -->
+                            <relocations>
+                                <relocation>
+                                    <pattern>com.fasterxml.jackson</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.jackson</shadedPattern>
+                                </relocation>
+                            </relocations>
                             <filters>
                                 <filter><artifact>*:*</artifact><excludes>
                                     <exclude>META-INF/*.SF</exclude>
