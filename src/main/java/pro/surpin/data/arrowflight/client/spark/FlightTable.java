@@ -41,6 +41,8 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
     private static final String PARTITION_UPPER_BOUND = "partition.upperBound";
     private static final String PARTITION_PREDICATE = "partition.predicate";
     private static final String PARTITION_PREDICATES = "partition.predicates";
+    //scale the reported scan size by the estimated selectivity of pushed filters
+    private static final String STATISTICS_FILTER_SELECTIVITY = "statistics.filterSelectivity";
 
     //write protocol
     private static final String WRITE_PROTOCOL = "write.protocol";
@@ -130,7 +132,8 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
                 options.containsKey(FlightTable.PARTITION_PREDICATES) ? options.get(FlightTable.PARTITION_PREDICATES).split("[;|,]") : new String[0]
             )
         );
-        return new FlightScanBuilder(this.configuration, scanTable, partitionBehavior);
+        return new FlightScanBuilder(this.configuration, scanTable, partitionBehavior,
+            Boolean.parseBoolean(options.getOrDefault(FlightTable.STATISTICS_FILTER_SELECTIVITY, "false")));
     }
 
     /**

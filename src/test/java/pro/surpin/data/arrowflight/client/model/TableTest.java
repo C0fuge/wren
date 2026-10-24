@@ -327,4 +327,58 @@ class TableTest {
         Table t = Table.forTable("SELECT * FROM remote_table", "\"");
         assertEquals("(SELECT * FROM remote_table) t", t.getName());
     }
+
+    // ── post-pushdown estimates ─────────────────────────────────────────────
+
+    /** Verifies the raw estimate is reported unchanged without pushdown hints. */
+    @Test
+    void estimatesKeepRawSizeWithoutHints() {
+        Table t = newTable();
+        assertEquals(1000L, t.estimateOutputRows(1000L));
+        assertEquals(8000L, t.estimateOutputBytes(8000L, 1000L));
+    }
+
+    /** Verifies the filter selectivity scales rows and bytes alike, never below one. */
+    @Test
+    void estimatesScaleBySelectivity() {
+        Table t = newTable();
+        t.setPushdownEstimate(0.1, false);
+        assertEquals(100L, t.estimateOutputRows(1000L));
+        assertEquals(800L, t.estimateOutputBytes(8000L, 1000L));
+        t.setPushdownEstimate(0.0, false);
+        assertEquals(1L, t.estimateOutputRows(1000L));
+        assertEquals(8L, t.estimateOutputBytes(8000L, 1000L));
+    }
+
+    /** Verifies a global aggregation reports one row. */
+    @Test
+    void globalAggregationReportsOneRow() {
+        Table t = newTable();
+        t.setPushdownEstimate(1.0, true);
+        assertEquals(1L, t.estimateOutputRows(1000L));
+        assertEquals(8L, t.estimateOutputBytes(8000L, 1000L));
+        assertEquals(1L, t.estimateOutputRows(-1L));
+    }
+
+    /** Verifies unknown server estimates stay unknown and invalid selectivities are ignored. */
+    @Test
+    void unknownEstimatesStayUnknown() {
+        Table t = newTable();
+        t.setPushdownEstimate(0.5, false);
+        assertEquals(-1L, t.estimateOutputRows(-1L));
+        assertEquals(-1L, t.estimateOutputBytes(-1L, 1000L));
+        assertEquals(8000L, t.estimateOutputBytes(8000L, -1L));
+        t.setPushdownEstimate(Double.NaN, false);
+        assertEquals(1000L, t.estimateOutputRows(1000L));
+        t.setPushdownEstimate(2.0, false);
+        assertEquals(1000L, t.estimateOutputRows(1000L));
+    }
+
+    /** Verifies a new scan starts without the hints of an earlier scan. */
+    @Test
+    void newScanDropsHints() {
+        Table t = newTable();
+        t.setPushdownEstimate(0.1, true);
+        assertEquals(1000L, t.newScan().estimateOutputRows(1000L));
+    }
 }

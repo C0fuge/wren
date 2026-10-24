@@ -24,6 +24,10 @@ import java.util.List;
 public final class Table implements Serializable {
     private final TableScan scan;
     private StructType sparkSchema;
+    //fraction of the server's raw row estimate that the pushed filters keep
+    private double pushedSelectivity = 1.0;
+    //true when a pushed aggregation has no grouping keys and yields one row
+    private boolean pushedGlobalAggregation = false;
 
     /**
      * Wraps a scan.
@@ -88,21 +92,66 @@ public final class Table implements Serializable {
     }
 
     /**
-     * Returns the estimated input size for this physical scan.
+     * Returns the estimated output size of this physical scan after pushdown.
      *
      * @return estimated bytes, or a negative value when unavailable
      */
     public long getEstimatedBytes() {
-        return scan.getEstimatedBytes();
+        return estimateOutputBytes(scan.getEstimatedBytes(), scan.getEstimatedRows());
     }
 
     /**
-     * Returns the estimated input row count for this physical scan.
+     * Returns the estimated output row count of this physical scan after pushdown.
      *
      * @return estimated rows, or a negative value when unavailable
      */
     public long getEstimatedRows() {
-        return scan.getEstimatedRows();
+        return estimateOutputRows(scan.getEstimatedRows());
+    }
+
+    /**
+     * Records how pushdown shrinks the server's raw input estimate.
+     *
+     * @param selectivity fraction of rows the pushed filters keep; outside [0, 1] means 1
+     * @param globalAggregation true when a pushed aggregation has no grouping keys
+     */
+    public void setPushdownEstimate(double selectivity, boolean globalAggregation) {
+        this.pushedSelectivity = selectivity >= 0.0 && selectivity <= 1.0 ? selectivity : 1.0;
+        this.pushedGlobalAggregation = globalAggregation;
+    }
+
+    /**
+     * Scales the server's raw row estimate by the pushdown hints.
+     *
+     * @param rawRows raw input rows, or negative when unknown
+     * @return estimated output rows, or negative when unknown
+     */
+    long estimateOutputRows(long rawRows) {
+        if (this.pushedGlobalAggregation) {
+            return 1L;
+        }
+        if (rawRows < 0) {
+            return rawRows;
+        }
+        return Math.max(1L, Math.round(rawRows * this.pushedSelectivity));
+    }
+
+    /**
+     * Scales the server's raw byte estimate by the same row fraction, keeping its on-disk basis.
+     *
+     * @param rawBytes raw input bytes, or negative when unknown
+     * @param rawRows raw input rows, or negative when unknown
+     * @return estimated output bytes, or negative when unknown
+     */
+    long estimateOutputBytes(long rawBytes, long rawRows) {
+        if (rawBytes < 0) {
+            return rawBytes;
+        }
+        if (rawRows <= 0) {
+            return rawBytes;
+        }
+        double fraction = Math.min(1.0, (double) estimateOutputRows(rawRows) / rawRows);
+        return Math.max(1L, Math.round(rawBytes * fraction));
     }
 
     /**

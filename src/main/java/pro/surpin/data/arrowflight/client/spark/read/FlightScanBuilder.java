@@ -32,6 +32,8 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
     private final Configuration configuration;
     private final Table table;
     private final PartitionBehavior partitionBehavior;
+    //whether the reported scan size is scaled by the estimated filter selectivity
+    private final boolean filterSelectivityEstimate;
 
     //the pushed-down filters
     private Filter[] pdFilters = new Filter[0];
@@ -50,10 +52,23 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
      * @param partitionBehavior - the partitioning behavior when loading data from remote flight service
      */
     public FlightScanBuilder(Configuration configuration, Table table, PartitionBehavior partitionBehavior) {
+        this(configuration, table, partitionBehavior, false);
+    }
+
+    /**
+     * Construct a flight-scan builder
+     * @param configuration - the configuration of remote flight-service
+     * @param table - the table instance representing a table in remote flight-service
+     * @param partitionBehavior - the partitioning behavior when loading data from remote flight service
+     * @param filterSelectivityEstimate - scale the reported scan size by the estimated selectivity of pushed filters
+     */
+    public FlightScanBuilder(Configuration configuration, Table table, PartitionBehavior partitionBehavior,
+            boolean filterSelectivityEstimate) {
         LOGGER.debug("{}()", this.getClass().getName());
         this.configuration = configuration;
         this.table = table;
         this.partitionBehavior = partitionBehavior;
+        this.filterSelectivityEstimate = filterSelectivityEstimate;
     }
 
     /**
@@ -168,10 +183,28 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
                         .map(StructField::name).toArray(String[]::new)),
                 this.pdFilters.length, this.pdPredicates.length);
         this.table.probe(where, this.pdColumns, this.pdAggregation, this.partitionBehavior);
+        // The server estimates the raw input; a global aggregate yields one row, and with the
+        // opt-in estimate the pushed filters shrink it so Spark can broadcast filtered tables.
+        this.table.setPushdownEstimate(
+                this.filterSelectivityEstimate ? ScanSelectivity.of(this.pdPredicates) : 1.0,
+                isGlobalAggregation(this.pdAggregation));
         // Plan exactly once, after Spark has supplied every accepted pushdown.
         // Earlier schema-only planning creates unused server handles and makes
         // Flight latency look worse than the actual scan.
         this.table.initialize(this.configuration);
         return new FlightScan(this.configuration, this.table);
+    }
+
+    /**
+     * Returns whether a pushed aggregation has aggregate functions and no grouping keys.
+     *
+     * @param aggregation pushed aggregation, or null
+     * @return true when the scan yields exactly one row
+     */
+    static boolean isGlobalAggregation(PushAggregation aggregation) {
+        return aggregation != null
+                && (aggregation.getGroupByColumns() == null || aggregation.getGroupByColumns().length == 0)
+                && aggregation.getColumnExpressions() != null
+                && aggregation.getColumnExpressions().length > 0;
     }
 }
