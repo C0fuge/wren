@@ -11,6 +11,22 @@
     <artifactId>arrow-flight-spark-connector</artifactId>
     <packaging>jar</packaging>
     <name>Arrow Flight Spark Connector</name>
+    <properties>
+        <netty.version>4.2.19.Final</netty.version>
+    </properties>
+    <!-- One Netty version for Arrow, gRPC, Spark and the server under test (the epoll transport
+         fails on a mix of 4.1 and 4.2 modules); as in flight-server. -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>${netty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
         <dependency>
             <groupId>pro.surpin.arrowflight</groupId>
