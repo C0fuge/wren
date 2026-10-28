@@ -22,15 +22,19 @@ S1. **Kerberos on YARN executors** — in progress. Done (2026-10-28): `FlightDe
     `FLIGHT_KERBEROS_SESSION`, alias `flight-session:<host>:<port>`, session as token password, earliest expiry
     returned so Spark re-obtains at 75 %); readers, writers and truncate connect through
     `FlightSessionTokens.connect`, which swaps SPNEGO for the session when one is in the UGI credentials and
-    otherwise falls back with a clear error. Tests use a TLS Flight server running the server's real
-    `KerberosFlightAuthenticator` + `KerberosSessionToken` with a stub ticket check (no KDC). **Remaining:**
-    (a) real Kerberos in a test: Kerby `SimpleKdcServer` in-process (as the server's `HdfsTicketCache` test; add
-    `org.apache.kerby:kerb-simplekdc` test dep), client + `flight/localhost` keytabs, provider's `negotiate()` with
-    a keytab UGI against the server's `KerberosFlightAuthenticator.gssAcceptor` (expose it through
-    `src/test/.../server/KerberosTestAuthenticator`), then an executor UGI without TGT reading through the session;
-    (b) a Spark run where the token manager really ships the session (`local-cluster[1,1,1024]` or a CI job with
-    `spark-submit --principal/--keytab`; plain `local[*]` never runs the token manager) — if too heavy, document
-    and close S1 with (a).
+    otherwise falls back with a clear error. Tests: a TLS Flight server running the server's real
+    `KerberosFlightAuthenticator` + `KerberosSessionToken`, with a stub ticket check
+    (`FlightDelegationTokenProviderTest`) and with real Kerberos (`FlightKerberosKdcTest`: in-process Kerby KDC,
+    `alice` and `flight/localhost` keytabs, the server's `gssAcceptor` via `KerberosTestAuthenticator.gss`; the
+    provider under a keytab `doAs` ships a session whose principal is `alice@EXAMPLE.COM`, an executor UGI without
+    login connects with it, a ticket for another service ships nothing, no session + no login fails with the clear
+    error, the client core's own SPNEGO works with a keytab process login). **Remaining:** (b) a Spark run where
+    the token manager really ships the session: `local-cluster[1,1,1024]` with `spark.kerberos.principal/keytab`
+    (+ `hadoop.security.authentication=kerberos` in the Hadoop conf) against the KDC fixture of
+    `FlightKerberosKdcTest` (move KDC + server setup into a shared fixture class), a `format("flight")` read on
+    the fixture server needs a real producer — either `TestFlightServerHelper` gains TLS + a header authenticator
+    (server repo: Open question) or the test uses a minimal Flight SQL producer here; plain `local[*]` never runs
+    the token manager. If too heavy, document and close S1 with (a).
 S2. **Build matrix.** Maven profiles for Spark 3.3 / 3.4 / 3.5 (Scala 2.12) and Spark 4.0 (Scala 2.13, JDK 17/21);
     CI matrix over them. Check the shaded jar against a Hadoop 3.1.3 client classpath: Netty, protobuf, Guava and
     Jackson relocated, no clashes (a test that loads the shaded jar next to Hadoop 3.1.3 client jars).
@@ -52,6 +56,16 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   (the client core pools by credentials and never evicts), so a long job leaves ~8 idle clients per executor and
   hour (sessions last 10 min, re-obtained every ~7.5). A client-core hook to swap the bearer of a pooled Kerberos
   client (or pool eviction) would remove that; a configurable session lifetime on the server would reduce it.
+- For the client core (found 2026-10-28 by `FlightKerberosKdcTest`; matters for drivers that serve several users
+  with `doAs`, e.g. proxy users / Thrift server, not for executors with a shipped session): `Client.getOrCreate`
+  keys the pool by `UserGroupInformation.getCurrentUser()` on the caller thread, but `KerberosCredentialWriter`
+  runs as gRPC `CallCredentials` on a gRPC executor thread, where `getCurrentUser()` is the process login user or
+  the Kerberos login of whatever `doAs` created that pool thread. So inside `ugi.doAs` (without a process login)
+  SPNEGO fails, or — if the gRPC threads were created inside another user's `doAs` — authenticates as that other
+  user. Proposed fix: compute the `Negotiate` header on the caller thread before the handshake and pass the fixed
+  value (as `FlightDelegationTokenProvider.handshake` does here). Connector workaround if wanted earlier: have
+  `FlightSessionTokens.connect` obtain the session itself on the caller thread for Kerberos configs (needs a
+  session cache per user/host/port to avoid a new pooled client per call).
 
 ## Log
 
@@ -66,3 +80,9 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   failures, Checkstyle 0, SpotBugs 0; CI run 40671758401 green (job logs not readable from the session: blob host
   blocked by the session proxy, step results only). Local build note: `./mvnw` could not download Maven 3.10.0 in
   the session; system `mvn` 3.9.11 worked (also for `scripts/install-kestrel.sh`'s build step). Next: S1 (a)/(b).
+- 2026-10-28 (session): S1 (a) — `FlightKerberosKdcTest` (in-process Kerby KDC, real SPNEGO tickets against the
+  server's GSS acceptor; test dep `kerb-simplekdc` 2.0.3), 4 new tests; `KerberosTestAuthenticator.gss`,
+  `KerberosFlightServerFixture(CallHeaderAuthenticator)`. Found that the client core takes the Kerberos identity
+  from the gRPC thread, not the caller's `doAs` (Open questions; tests ordered and the client-core SPNEGO case uses a
+  process login). Local `verify` (system `mvn`): 191 tests, 0 failures, Checkstyle 0, SpotBugs 0; CI run
+  40681503257 green. Next: S1 (b).
