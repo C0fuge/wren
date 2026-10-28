@@ -3,15 +3,27 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <parent>
-        <groupId>pro.surpin.arrowflight</groupId>
-        <artifactId>arrow-flight-parent</artifactId>
-        <version>1.0.0</version>
-    </parent>
+    <!-- Standalone since the split from the server repository (kestrel). The parent's settings
+         are vendored below; the server's artifacts (client core, server + its test-jar) come from
+         the local Maven repository: scripts/install-kestrel.sh builds them at the commit pinned
+         in kestrel.ref. -->
+    <groupId>pro.surpin.arrowflight</groupId>
     <artifactId>arrow-flight-spark-connector</artifactId>
+    <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>Arrow Flight Spark Connector</name>
     <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Version of the server repository's artifacts (built locally from kestrel.ref). -->
+        <kestrel.version>1.0.0</kestrel.version>
+        <arrow.version>19.0.0</arrow.version>
+        <spark.version>3.5.9</spark.version>
+        <junit.version>5.14.4</junit.version>
+        <!-- Spark local-mode and in-process server tests run by default; perf and real-services
+             only on request (-Pperf / -Preal-services). -->
+        <excludedGroups>perf,real-services</excludedGroups>
+        <checkstyle.failOnViolation>true</checkstyle.failOnViolation>
         <netty.version>4.2.19.Final</netty.version>
         <jackson.version>2.21.8</jackson.version>
     </properties>
@@ -42,7 +54,7 @@
         <dependency>
             <groupId>pro.surpin.arrowflight</groupId>
             <artifactId>arrow-flight-client-core</artifactId>
-            <version>${project.version}</version>
+            <version>${kestrel.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
@@ -123,14 +135,14 @@
         <dependency>
             <groupId>pro.surpin.arrowflight</groupId>
             <artifactId>arrow-flight-server</artifactId>
-            <version>${project.version}</version>
+            <version>${kestrel.version}</version>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>pro.surpin.arrowflight</groupId>
             <artifactId>arrow-flight-server</artifactId>
-            <version>${project.version}</version>
+            <version>${kestrel.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -233,7 +245,7 @@
                     <version>10.26.1</version>
                 </dependency></dependencies>
                 <configuration>
-                    <configLocation>${maven.multiModuleProjectDirectory}/checkstyle.xml</configLocation>
+                    <configLocation>${project.basedir}/checkstyle.xml</configLocation>
                     <consoleOutput>true</consoleOutput>
                     <failsOnError>true</failsOnError>
                     <failOnViolation>${checkstyle.failOnViolation}</failOnViolation>
@@ -249,9 +261,25 @@
                 <configuration>
                     <effort>Max</effort><threshold>Medium</threshold><failOnError>true</failOnError>
                     <xmlOutput>true</xmlOutput>
-                    <excludeFilterFile>${maven.multiModuleProjectDirectory}/spotbugs-exclude.xml</excludeFilterFile>
+                    <excludeFilterFile>${project.basedir}/spotbugs-exclude.xml</excludeFilterFile>
                 </configuration>
             </plugin>
         </plugins>
     </build>
+    <profiles>
+        <profile>
+            <id>perf</id>
+            <properties>
+                <groups>perf</groups>
+                <excludedGroups />
+            </properties>
+        </profile>
+        <profile>
+            <id>real-services</id>
+            <properties>
+                <groups>real-services</groups>
+                <excludedGroups />
+            </properties>
+        </profile>
+    </profiles>
 </project>

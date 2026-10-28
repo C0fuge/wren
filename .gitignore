@@ -1,0 +1,10 @@
+target/
+.kestrel/
+*.class
+dependency-reduced-pom.xml
+.idea/
+*.iml
+.vscode/
+spark-warehouse/
+metastore_db/
+derby.log
