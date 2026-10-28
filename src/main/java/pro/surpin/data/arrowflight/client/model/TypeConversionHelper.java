@@ -7,18 +7,17 @@ import org.apache.arrow.vector.complex.MapVector;
 import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.util.JsonStringHashMap;
 import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
 import org.apache.spark.sql.catalyst.util.ArrayBasedMapData;
 import org.apache.spark.sql.catalyst.util.ArrayData;
 import org.apache.spark.sql.catalyst.util.DateTimeUtils;
 import org.apache.spark.sql.catalyst.util.IntervalUtils;
 import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.unsafe.types.UTF8String;
-import scala.collection.JavaConverters;
 
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.*;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiFunction;
@@ -97,9 +96,9 @@ public class TypeConversionHelper {
     public static final Function<Duration, Long> durationToLong = IntervalUtils::durationToMicros;
     public static final Function<Period, Integer> periodToInt = IntervalUtils::periodToMonths;
     public static final Function<PeriodDuration, InternalRow> translatePeriodDuration =
-            (pd) -> InternalRow.fromSeq(JavaConverters.asScalaBuffer(List.<Object>of(
+            (pd) -> new GenericInternalRow(new Object[] {
                     TypeConversionHelper.periodToInt.apply(pd.getPeriod()),
-                    TypeConversionHelper.durationToLong.apply(pd.getDuration()))));
+                    TypeConversionHelper.durationToLong.apply(pd.getDuration())});
 
     @SuppressWarnings("UstableApiUsage")
     static final ArrowConversion.ConvertFrom<Map<String, ?>, StructVector, FieldType.StructType, InternalRow> translateStruct = (m, sv, t) -> {
@@ -111,7 +110,7 @@ public class TypeConversionHelper {
         };
         List<Object> nm = new java.util.ArrayList<>();
         Streams.mapWithIndex(m.entrySet().stream(), setV::apply).forEach(nm::add);
-        return InternalRow.fromSeq(JavaConverters.asScalaBuffer(Arrays.asList(nm.toArray())).toSeq());
+        return new GenericInternalRow(nm.toArray());
     };
     static final ArrowConversion.ConvertFrom<Map<String, ?>, StructVector, FieldType.StructType, ArrayBasedMapData> structToMap = (m, sv, t) -> {
         Map<String, FieldType> mt = t.getChildrenType();

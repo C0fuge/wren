@@ -18,7 +18,10 @@
         <!-- Version of the server repository's artifacts (built locally from kestrel.ref). -->
         <kestrel.version>1.0.0</kestrel.version>
         <arrow.version>19.0.0</arrow.version>
+        <!-- Spark build line: 3.5 / Scala 2.12 by default; -Pspark-3.3, -Pspark-3.4, -Pspark-4.0
+             (Scala 2.13) switch it (see the spark-* profiles and the CI matrix). -->
         <spark.version>3.5.9</spark.version>
+        <scala.binary.version>2.12</scala.binary.version>
         <junit.version>5.14.4</junit.version>
         <!-- Spark local-mode and in-process server tests run by default; perf and real-services
              only on request (-Pperf / -Preal-services). -->
@@ -110,13 +113,13 @@
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
-            <artifactId>spark-core_2.12</artifactId>
+            <artifactId>spark-core_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
-            <artifactId>spark-sql_2.12</artifactId>
+            <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>provided</scope>
         </dependency>
@@ -274,6 +277,36 @@
         </plugins>
     </build>
     <profiles>
+        <!-- Spark build lines. 3.5 is the default (the properties above); its profile only names it
+             so that every CI matrix entry passes one. -->
+        <profile>
+            <id>spark-3.3</id>
+            <properties>
+                <spark.version>3.3.4</spark.version>
+                <scala.binary.version>2.12</scala.binary.version>
+            </properties>
+        </profile>
+        <profile>
+            <id>spark-3.4</id>
+            <properties>
+                <spark.version>3.4.4</spark.version>
+                <scala.binary.version>2.12</scala.binary.version>
+            </properties>
+        </profile>
+        <profile>
+            <id>spark-3.5</id>
+            <properties>
+                <spark.version>3.5.9</spark.version>
+                <scala.binary.version>2.12</scala.binary.version>
+            </properties>
+        </profile>
+        <profile>
+            <id>spark-4.0</id>
+            <properties>
+                <spark.version>4.0.5</spark.version>
+                <scala.binary.version>2.13</scala.binary.version>
+            </properties>
+        </profile>
         <profile>
             <id>perf</id>
             <properties>

@@ -1,7 +1,7 @@
 # Build and test the Spark connector. The server repository's artifacts (client core, server and
 # its test-jar) are built first at the commit pinned in kestrel.ref (scripts/install-kestrel.sh).
 # Tests: unit + Spark local mode + in-process server (all tags except perf and real-services),
-# then Checkstyle and SpotBugs.
+# then Checkstyle and SpotBugs; once per Spark build line (matrix over the spark-* profiles).
 name: CI
 
 on:
@@ -30,8 +30,21 @@ env:
 
 jobs:
   build:
+    name: build (${{ matrix.spark }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        spark: [ spark-3.3, spark-3.4, spark-3.5, spark-4.0 ]
+        # Spark 3.3 / 3.4 cannot start on JDK 21 (their Platform class fails to initialise) and the
+        # server's client core is Java 21 bytecode: those lines are compiled and checked, not tested
+        # (docs/STATUS.md, Open questions).
+        include:
+          - spark: spark-3.3
+            skip_tests: true
+          - spark: spark-3.4
+            skip_tests: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -48,7 +61,7 @@ jobs:
           scripts/install-kestrel.sh
 
       - name: Build, tests (no perf / real-services), Checkstyle, SpotBugs
-        run: ./mvnw clean verify checkstyle:check spotbugs:check
+        run: ./mvnw -P${{ matrix.spark }} -DskipTests=${{ matrix.skip_tests || false }} clean verify checkstyle:check spotbugs:check
 
       - name: Test summary
         if: always()
@@ -60,7 +73,7 @@ jobs:
               s = ET.parse(f).getroot()
               for i, k in enumerate(("tests", "failures", "errors", "skipped")):
                   t[i] += int(s.get(k, 0))
-          print("| tests | failures | errors | skipped |\n|---|---|---|---|")
+          print("${{ matrix.spark }}\n\n| tests | failures | errors | skipped |\n|---|---|---|---|")
           print("| " + " | ".join(map(str, t)) + " |")
           EOF
 
@@ -68,7 +81,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: surefire-reports
+          name: surefire-reports-${{ matrix.spark }}
           path: target/surefire-reports/
           retention-days: 7
           if-no-files-found: ignore

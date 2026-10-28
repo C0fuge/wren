@@ -293,7 +293,8 @@ public final class SparkPushdown {
         if (type.equals(DataTypes.DateType) && value instanceof Number days) {
             return Expr.Literal.of(LocalDate.ofEpochDay(days.longValue()));
         }
-        if ((type.equals(DataTypes.TimestampType) || type.equals(DataTypes.TimestampNTZType))
+        // TimestampNTZ by name: DataTypes.TimestampNTZType is public from Spark 3.4 only.
+        if ((type.equals(DataTypes.TimestampType) || "timestamp_ntz".equals(type.typeName()))
                 && value instanceof Number micros) {
             long epochMicros = micros.longValue();
             long seconds = Math.floorDiv(epochMicros, 1_000_000L);

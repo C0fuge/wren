@@ -12,7 +12,8 @@ spark.read.format("flight")
   .load()
 ```
 
-Status: Spark 3.5 (Scala 2.12), JDK 21. Backlog and decisions: `docs/STATUS.md`.
+Status: Spark 3.5 (Scala 2.12, default) and Spark 4.0 (Scala 2.13), JDK 21. Backlog and decisions:
+`docs/STATUS.md`.
 
 ## Build
 
@@ -22,7 +23,12 @@ is pinned in `kestrel.ref`.
 ```sh
 scripts/install-kestrel.sh          # builds and installs the server artifacts at kestrel.ref
 ./mvnw verify                       # unit + Spark local-mode tests (no perf / real-services)
+./mvnw -Pspark-4.0 verify           # the same against Spark 4.0 / Scala 2.13
 ```
+
+Spark build lines (profiles): `spark-3.5` (default), `spark-4.0`; `spark-3.3` and `spark-3.4` compile but cannot run:
+those Spark versions do not start on JDK 21, which the server's client core requires. Build the jar for the Spark
+line the cluster runs (Scala 2.12 and 2.13 jars are not interchangeable).
 
 The jar to put on Spark's class path is `target/arrow-flight-spark-connector-<version>-shaded.jar` (Jackson
 relocated; Spark itself is `provided`).

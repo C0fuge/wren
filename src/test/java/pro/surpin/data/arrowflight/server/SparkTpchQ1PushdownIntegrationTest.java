@@ -70,6 +70,8 @@ class SparkTpchQ1PushdownIntegrationTest {
                 .config("spark.sql.shuffle.partitions", "4")
                 .config("spark.sql.catalog.spark_catalog", FlightSessionCatalog.class.getName())
                 .config("spark.driver.bindAddress", "127.0.0.1")
+                // Advertise the address bound: Spark 4 executors fetch session classes from the driver.
+                .config("spark.driver.host", "127.0.0.1")
                 .getOrCreate();
         spark.sparkContext().setLogLevel("WARN");
 

@@ -46,6 +46,8 @@ class SparkJoinIntegrationTest {
                 .master("local[2]")
                 .config("spark.sql.shuffle.partitions", "4")
                 .config("spark.driver.bindAddress", "127.0.0.1")
+                // Advertise the address bound: Spark 4 executors fetch session classes from the driver.
+                .config("spark.driver.host", "127.0.0.1")
                 .getOrCreate();
         spark.sparkContext().setLogLevel("WARN");
     }
@@ -243,7 +245,9 @@ class SparkJoinIntegrationTest {
 
         Dataset<Row> joined = t1.alias("t1")
                 .join(t2.alias("t2"),
-                        col("t1.bool_col").equalTo(col("t2.tinyint_col")),
+                        // Explicit cast, as non-ANSI coercion does: Spark 4 (ANSI by default)
+                        // rejects BOOLEAN = TINYINT.
+                        col("t1.bool_col").cast("tinyint").equalTo(col("t2.tinyint_col")),
                         "inner");
 
         assertNotNull(joined.schema(), "Schema must not be null");
