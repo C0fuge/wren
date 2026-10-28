@@ -115,5 +115,5 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   relocate Arrow, FlatBuffers, Netty (+ `META-INF/native/libnetty_*` renamed: relocated epoll loads), gRPC,
   perfmark, protobuf, Guava, Gson, Apache Commons; slf4j no longer bundled; dead multi-release Jackson entries
   dropped. Passes on Spark 3.5.9 and 4.0.5 next to Hadoop 3.1.3. `scripts/install-kestrel.sh` takes `MVN=mvn`.
-  Local (system `mvn`, 3.5): 192 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0: the IT green. CI run CIRUN. Note: the lock commit of this session carries a
+  Local (system `mvn`, 3.5): 192 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0: the IT green. CI run 40719166518 green (4 jobs; the IT ran on 3.5 and 4.0). Note: the lock commit of this session carries a
   `Co-Authored-By` trailer by mistake (no rewrite of `main`); later commits have none. Next: S3 (Spark catalog).
