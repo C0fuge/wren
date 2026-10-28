@@ -29,6 +29,19 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
         SupportsPushDownRequiredColumns, SupportsPushDownAggregates {
     private static final Logger LOGGER = LoggerFactory.getLogger(FlightScanBuilder.class);
 
+    /**
+     * Spark SQL setting: {@code false} (default), {@code true} or {@code auto}. When on, accepted predicates are
+     * returned to Spark as well (the server still applies them), so Spark's dynamic pruning sees a selective filter
+     * and may narrow a join's other Flight scan at run time. Kept filters stop Spark from pushing aggregations.
+     */
+    public static final String RETAIN_PUSHED_FILTERS = "spark.flight.retainPushedFilters";
+    /** Spark SQL setting: in {@code auto} mode, the largest table (server rows) whose filters are kept. */
+    public static final String RETAIN_MAX_ROWS = "spark.flight.retainMaxRows";
+    /** Spark SQL setting: in {@code auto} mode, the largest estimated share of rows the filters may keep. */
+    public static final String RETAIN_MAX_SELECTIVITY = "spark.flight.retainMaxSelectivity";
+    static final long DEFAULT_RETAIN_MAX_ROWS = 50_000_000L;
+    static final double DEFAULT_RETAIN_MAX_SELECTIVITY = 0.1;
+
     private final Configuration configuration;
     private final Table table;
     private final PartitionBehavior partitionBehavior;
@@ -39,6 +52,8 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
     private Filter[] pdFilters = new Filter[0];
     //the pushed-down V2 predicates
     private Predicate[] pdPredicates = new Predicate[0];
+    // true when the pushed predicates were returned to Spark as well
+    private boolean retained;
     //the pushed-down columns
     private StructField[] pdColumns = new StructField[0];
 
@@ -137,7 +152,96 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
             }
         }
         this.pdPredicates = pushed.toArray(new Predicate[0]);
+        this.retained = !pushed.isEmpty() && retainsFilters();
+        if (this.retained) {
+            unhandled.addAll(pushed);
+        }
         return unhandled.toArray(new Predicate[0]);
+    }
+
+    /**
+     * Decides whether the accepted predicates stay in Spark's plan ({@value #RETAIN_PUSHED_FILTERS}); in
+     * {@code auto} mode from the server's statistics of a plain table.
+     *
+     * @return true to return the pushed predicates to Spark as well
+     */
+    private boolean retainsFilters() {
+        String mode = sparkSetting(RETAIN_PUSHED_FILTERS, "false");
+        if (!"auto".equalsIgnoreCase(mode)) {
+            return shouldRetain(mode, -1, 1.0, 0, 0.0);
+        }
+        if (!ServerColumnStatistics.describable(this.table.getName())) {
+            return false;
+        }
+        ServerColumnStatistics.Answer stats = ServerColumnStatistics.fetch(this.configuration, this.table.getName(),
+                ScanSelectivity.columns(this.pdPredicates));
+        return shouldRetain(mode, stats.rows(), ScanSelectivity.of(this.pdPredicates, stats),
+                sparkSetting(RETAIN_MAX_ROWS, DEFAULT_RETAIN_MAX_ROWS),
+                sparkSetting(RETAIN_MAX_SELECTIVITY, DEFAULT_RETAIN_MAX_SELECTIVITY));
+    }
+
+    /**
+     * Decides whether pushed filters stay in Spark's plan. Dynamic pruning collects the join keys of the filtered
+     * side, so in {@code auto} mode only a table of known, bounded size cut down to a small share qualifies.
+     *
+     * @param mode {@code true}, {@code false} or {@code auto}
+     * @param rows rows in the table, negative when unknown
+     * @param selectivity estimated share of the rows the filters keep
+     * @param maxRows largest table kept in {@code auto} mode
+     * @param maxSelectivity largest kept share in {@code auto} mode
+     * @return true to return the pushed predicates to Spark as well
+     */
+    static boolean shouldRetain(String mode, long rows, double selectivity, long maxRows, double maxSelectivity) {
+        if ("true".equalsIgnoreCase(mode)) {
+            return true;
+        }
+        return "auto".equalsIgnoreCase(mode) && rows >= 0 && rows <= maxRows && selectivity <= maxSelectivity;
+    }
+
+    /**
+     * Reads a Spark SQL setting of the active session.
+     *
+     * @param key setting name
+     * @param fallback value without a setting or an active session
+     * @return the setting
+     */
+    static String sparkSetting(String key, String fallback) {
+        // Not SparkSession.active(): without a session Spark 4 throws a checked SparkException from it.
+        scala.Option<org.apache.spark.sql.SparkSession> session = org.apache.spark.sql.SparkSession.getActiveSession();
+        if (session.isEmpty()) {
+            session = org.apache.spark.sql.SparkSession.getDefaultSession();
+        }
+        return session.isEmpty() ? fallback : session.get().conf().get(key, fallback);
+    }
+
+    /**
+     * Reads a numeric Spark SQL setting of the active session.
+     *
+     * @param key setting name
+     * @param fallback value without a (valid) setting
+     * @return the setting
+     */
+    static long sparkSetting(String key, long fallback) {
+        try {
+            return Long.parseLong(sparkSetting(key, Long.toString(fallback)).trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(key + " must be a whole number", e);
+        }
+    }
+
+    /**
+     * Reads a fractional Spark SQL setting of the active session.
+     *
+     * @param key setting name
+     * @param fallback value without a setting
+     * @return the setting
+     */
+    static double sparkSetting(String key, double fallback) {
+        try {
+            return Double.parseDouble(sparkSetting(key, Double.toString(fallback)).trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(key + " must be a number", e);
+        }
     }
 
     /**
@@ -192,7 +296,21 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
         // Earlier schema-only planning creates unused server handles and makes
         // Flight latency look worse than the actual scan.
         this.table.initialize(this.configuration);
-        return new FlightScan(this.configuration, this.table);
+        // Runtime filtering re-plans the scan with the same pushdown plus the conditions Spark found at run time.
+        StructField[] columns = this.pdColumns;
+        PushAggregation aggregation = this.pdAggregation;
+        PartitionBehavior behavior = this.partitionBehavior;
+        Configuration config = this.configuration;
+        Table scanTable = this.table;
+        // Off by default: with retainPushedFilters=false the scan offers nothing to Spark's dynamic pruning either.
+        boolean runtimeFiltering = !"false".equalsIgnoreCase(sparkSetting(RETAIN_PUSHED_FILTERS, "false").trim());
+        FlightScan.Replanner replanner = aggregation != null || !runtimeFiltering ? null : extra -> {
+            List<String> all = new ArrayList<>(whereParts);
+            extra.forEach(condition -> all.add("(" + condition + ")"));
+            scanTable.probe(String.join(" and ", all), columns, null, behavior);
+            scanTable.initialize(config);
+        };
+        return new FlightScan(this.configuration, this.table, replanner, this.retained);
     }
 
     /**

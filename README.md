@@ -77,6 +77,31 @@ outside the bounds keeps nothing, `IS NULL` uses the null count. Without the act
 columns, unknown shapes) fixed defaults apply: equality 0.1, range 1/3, `LIKE` patterns 0.25. Estimates never
 change results.
 
+## Runtime filtering
+
+Opt-in, Spark session settings. A join of a filtered Flight table with a big Flight table can prune the big scan at
+run time: Spark's dynamic pruning collects the join keys of the filtered side and the connector plans the big scan
+again on the server with `key IN (...)`. Spark still performs the join, so results never change.
+
+```sh
+--conf spark.flight.retainPushedFilters=true            # or auto; default false
+--conf spark.sql.extensions=pro.surpin.data.arrowflight.client.spark.FlightAqeGuard
+```
+
+- `spark.flight.retainPushedFilters`: Spark only prunes with a side whose filter it sees, and filters the server
+  takes are normally removed from Spark's plan. `true` returns them to Spark as well (the server still applies
+  them; Spark re-checks the already filtered rows). `auto` does this only for a plain `schema.table` that the
+  server's statistics show is at most `spark.flight.retainMaxRows` rows (default 50000000) with filters keeping at
+  most `spark.flight.retainMaxSelectivity` of them (default 0.1, estimated as in "Scan statistics"). A kept filter
+  stops Spark from pushing an aggregation into that scan.
+- The pruned side (only while the setting is not `false`): integer (`int`/`bigint`) columns of scans whose server row estimate is at least
+  `spark.flight.runtimeFilterMinRows` (default 50000000), without a pushed aggregation. Up to
+  `spark.flight.runtimeFilterRangeMinKeys` keys (default 1000) are sent as an IN list, more as `key >= min and key
+  <= max`.
+- `FlightAqeGuard` (recommended with retained filters): Spark 3.5's adaptive execution can deadlock on a plan that
+  scans one table twice with a retained filter (a filtered self-join). The extension switches
+  `spark.sql.adaptive.enabled` off for exactly those queries and back on when they end (logged as warnings).
+
 ## Kerberos on YARN
 
 With `kerberos.servicePrincipal` (TLS required) every process authenticates with SPNEGO, so executors would need

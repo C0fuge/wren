@@ -505,4 +505,15 @@ class FlightScanBuilderTest {
             }
         };
     }
+
+    /** Retaining pushed filters: explicit modes, and auto only for a known small table with a selective filter. */
+    @Test
+    void retainsPushedFiltersByMode() {
+        assertFalse(FlightScanBuilder.shouldRetain("false", 10, 0.01, 100, 0.1));
+        assertTrue(FlightScanBuilder.shouldRetain("TRUE", -1, 1.0, 0, 0.0));
+        assertTrue(FlightScanBuilder.shouldRetain("auto", 100, 0.1, 100, 0.1));
+        assertFalse(FlightScanBuilder.shouldRetain("auto", 101, 0.01, 100, 0.1));
+        assertFalse(FlightScanBuilder.shouldRetain("auto", 10, 0.2, 100, 0.1));
+        assertFalse(FlightScanBuilder.shouldRetain("auto", -1, 0.01, 100, 0.1));
+    }
 }

@@ -57,4 +57,27 @@ public class FlightBatch implements Batch, Serializable {
         LOGGER.debug("{}.createReaderFactory()", this.getClass().getName());
         return new FlightPartitionReaderFactory(this.configuration);
     }
+
+    /**
+     * Batches of the same scan state are equal. Spark compares the batches of two scan nodes to reuse a broadcast
+     * for dynamic pruning (and exchanges in general); without this, every {@code toBatch()} differs and Spark drops
+     * runtime filters when adaptive execution is off.
+     *
+     * @param other another object
+     * @return true for a batch over the same table instance
+     */
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof FlightBatch batch && batch.table == this.table;
+    }
+
+    /**
+     * Hashes the table instance, consistent with {@link #equals(Object)}.
+     *
+     * @return hash code
+     */
+    @Override
+    public int hashCode() {
+        return System.identityHashCode(this.table);
+    }
 }
