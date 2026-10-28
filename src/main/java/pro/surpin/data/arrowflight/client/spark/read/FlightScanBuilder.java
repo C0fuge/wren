@@ -186,13 +186,30 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
         // The server estimates the raw input; a global aggregate yields one row, and with the
         // opt-in estimate the pushed filters shrink it so Spark can broadcast filtered tables.
         this.table.setPushdownEstimate(
-                this.filterSelectivityEstimate ? ScanSelectivity.of(this.pdPredicates) : 1.0,
+                this.filterSelectivityEstimate ? filterSelectivity() : 1.0,
                 isGlobalAggregation(this.pdAggregation));
         // Plan exactly once, after Spark has supplied every accepted pushdown.
         // Earlier schema-only planning creates unused server handles and makes
         // Flight latency look worse than the actual scan.
         this.table.initialize(this.configuration);
         return new FlightScan(this.configuration, this.table);
+    }
+
+    /**
+     * Estimates the share of rows the pushed predicates keep, refined by the server's column statistics of the
+     * predicates' columns when the source is a plain table and the server answers the statistics action.
+     *
+     * @return fraction of rows kept, in [0, 1]
+     */
+    private double filterSelectivity() {
+        if (this.pdPredicates.length == 0) {
+            return 1.0;
+        }
+        ServerColumnStatistics.Answer stats = ServerColumnStatistics.describable(this.table.getName())
+                ? ServerColumnStatistics.fetch(this.configuration, this.table.getName(),
+                        ScanSelectivity.columns(this.pdPredicates))
+                : ServerColumnStatistics.Answer.NONE;
+        return ScanSelectivity.of(this.pdPredicates, stats);
     }
 
     /**

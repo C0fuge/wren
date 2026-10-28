@@ -139,7 +139,7 @@ class SparkFlightCatalogTest {
     }
 
     @SuppressWarnings("unchecked")
-    private static void injectSparkUser(String user) throws Exception {
+    static void injectSparkUser(String user) throws Exception {
         Class<?> pe = Class.forName("java.lang.ProcessEnvironment");
         Field theUnmod = pe.getDeclaredField("theUnmodifiableEnvironment");
         theUnmod.setAccessible(true);

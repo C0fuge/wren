@@ -66,6 +66,17 @@ SELECT l_returnflag, count(*) FROM flight.tpch.lineitem GROUP BY l_returnflag;
   what is visible. Names are matched exactly (case-sensitive); one namespace level only.
 - Read-only: `CREATE`/`ALTER`/`DROP` of namespaces and tables fail. Writes go through `format("flight")`.
 
+## Scan statistics
+
+Each scan reports the server's size estimate (Parquet input bytes and rows) to Spark; a pushed global aggregate
+reports one row. With `statistics.filterSelectivity=true` (default `false`) the estimate is also scaled by the share
+of rows the pushed filters keep, so Spark can broadcast a filtered table. For a plain `schema.table` source the
+connector asks the server's `arrowflight.table_statistics` action for the filtered columns (footer bounds, null
+counts, distinct counts when the server has them): a range filter then keeps its share of the value range, a value
+outside the bounds keeps nothing, `IS NULL` uses the null count. Without the action (or for queries, string
+columns, unknown shapes) fixed defaults apply: equality 0.1, range 1/3, `LIKE` patterns 0.25. Estimates never
+change results.
+
 ## Kerberos on YARN
 
 With `kerberos.servicePrincipal` (TLS required) every process authenticates with SPNEGO, so executors would need
