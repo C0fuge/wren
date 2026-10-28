@@ -86,6 +86,8 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
         this.configuration = configuration;
         this.table = table;
         this.scanDefaults = Map.copyOf(scanDefaults);
+        // Spark resolves the table before it optimizes the query: the rule is in place for this query's subqueries.
+        FlightPushedCounts.register();
 
         //the data-source supports batch read/write, truncate the table
         this.capabilities.add(TableCapability.ACCEPT_ANY_SCHEMA);

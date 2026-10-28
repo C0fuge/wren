@@ -1,11 +1,13 @@
 package pro.surpin.data.arrowflight.server;
 
+import pro.surpin.data.arrowflight.client.spark.FlightPushedCounts;
 import pro.surpin.data.arrowflight.client.spark.FlightSessionCatalog;
 import pro.surpin.data.arrowflight.client.spark.FlightSource;
 
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -155,6 +157,52 @@ class SparkTpchQ1PushdownIntegrationTest {
         } finally {
             spark.conf().set("spark.sql.ansi.enabled", "true");
         }
+    }
+
+    /**
+     * TPC-H Q17 shape under ANSI mode: the correlated subquery's {@code avg} is pushed as partial SUM + COUNT. Spark
+     * 3.5 evaluates the subquery's aggregates on zero rows while planning, where its merge of the pushed counts
+     * ({@code sum}) is null; without {@link FlightPushedCounts} that divided null by null and failed with
+     * {@code [ARITHMETIC_OVERFLOW] Overflow in sum of decimals}. Results must equal the direct Parquet read, also for
+     * outer rows whose subquery has no rows (later ship dates filtered out in the subquery). Spark 4.0 does not push
+     * this subquery's avg; there only the results are compared.
+     */
+    @Test
+    void correlatedAvgSubqueryUnderAnsiMatchesDirectParquet() {
+        String q17 = """
+                SELECT count(*) AS n, sum(l_extendedprice) AS total FROM direct_lineitem o
+                WHERE l_quantity <= (SELECT avg(l_quantity) FROM %s i
+                                    WHERE i.l_partkey = o.l_partkey%s)
+                """;
+        for (String extra : List.of("", " AND i.l_shipdate < DATE '1998-07-01'")) {
+            Dataset<Row> flight = spark.sql(q17.formatted("flight_lineitem", extra));
+            String plan = flight.queryExecution().executedPlan().toString().toLowerCase();
+            boolean pushed = plan.contains("group by") && plan.contains("count(");
+            // Spark 3.5 pushes the subquery's avg (the failing case); Spark 4.0 keeps it in Spark.
+            assertTrue(pushed || !org.apache.spark.package$.MODULE$.SPARK_VERSION().startsWith("3."),
+                    "The subquery's avg must be pushed as partial aggregates:\n" + plan);
+            String optimized = flight.queryExecution().optimizedPlan().toString().toLowerCase();
+            assertTrue(!pushed || optimized.contains("coalesce(sum(agg_func_"),
+                    "The merged counts must be wrapped:\n" + optimized);
+            Row expected = spark.sql(q17.formatted("direct_lineitem", extra)).collectAsList().get(0);
+            assertTrue(expected.getLong(0) > 0, "The query must select rows");
+            assertEquals(expected, flight.collectAsList().get(0), "Flight and direct results must match");
+        }
+    }
+
+    /**
+     * The rule wraps each merged count once: applying it again leaves the plan unchanged, and Q1's
+     * {@code count(*)} becomes non-null as Spark's own count.
+     */
+    @Test
+    void pushedCountsRuleIsIdempotent() {
+        Dataset<Row> flight = q1("flight_lineitem");
+        LogicalPlan optimized = flight.queryExecution().optimizedPlan();
+        assertTrue(optimized.toString().toLowerCase().contains("coalesce("), "Q1's counts must be wrapped:\n"
+                + optimized);
+        assertTrue(FlightPushedCounts.instance().apply(optimized).fastEquals(optimized),
+                "A second application must not change the plan");
+        assertFalse(flight.schema().apply("count_order").nullable(), "count(*) must stay non-null");
     }
 
     /**

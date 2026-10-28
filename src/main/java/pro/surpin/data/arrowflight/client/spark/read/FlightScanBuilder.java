@@ -310,7 +310,7 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
             scanTable.probe(String.join(" and ", all), columns, null, behavior);
             scanTable.initialize(config);
         };
-        return new FlightScan(this.configuration, this.table, replanner, this.retained);
+        return new FlightScan(this.configuration, this.table, replanner, this.retained, aggregation != null);
     }
 
     /**

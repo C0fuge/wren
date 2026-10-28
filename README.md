@@ -18,11 +18,14 @@ ANSI mode an aggregate such as `SUM(l_extendedprice * (1 - l_discount))` therefo
 Spark (results are the same; TPC-H Q1 at SF1 is ~6x slower than with ANSI mode). Aggregates of plain columns are
 pushed either way.
 
-Known Spark 3.5 issue with ANSI mode (fixed in Spark 4.0): a correlated scalar subquery whose `AVG` over a decimal
-column is pushed fails with `[ARITHMETIC_OVERFLOW] Overflow in sum of decimals` while Spark plans it (TPC-H Q17),
-e.g. `... WHERE l_quantity < (SELECT 0.2 * avg(l_quantity) FROM lineitem i WHERE i.l_partkey = o.l_partkey)`.
-Spark merges the pushed partial counts with `sum`, which is null on no rows, and its subquery rewrite then divides
-null by null. The query fails; it never returns wrong rows. Workaround: run that query without ANSI mode.
+Pushed partial counts: Spark merges the partial `COUNT`s of a pushed aggregation (also those behind an `AVG`) with
+`sum`, which is null on no rows. On Spark 3.5 with ANSI mode that made a correlated scalar subquery with a pushed
+decimal `AVG` fail while Spark planned it (`[ARITHMETIC_OVERFLOW] Overflow in sum of decimals`, TPC-H Q17; Spark
+evaluates the subquery's aggregates on zero rows and divided null by null). The connector therefore adds an optimizer
+rule (`FlightPushedCounts`) to Spark's `experimental.extraOptimizations` of the session that resolves a Flight table;
+it rewrites each merged count to `coalesce(sum(count), 0)`, the exact count. If a job sets
+`spark.experimental.extraOptimizations` itself after reading a Flight table, it replaces the rule: append to the list
+instead.
 
 Status: Spark 3.5 (Scala 2.12, default) and Spark 4.0 (Scala 2.13), JDK 21. Backlog and decisions:
 `docs/STATUS.md`.

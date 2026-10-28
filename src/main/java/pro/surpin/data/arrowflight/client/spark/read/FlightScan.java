@@ -51,6 +51,8 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
     private final transient Replanner replanner;
     // True when the pushed predicates were also returned to Spark, which lets Spark prune other scans with them.
     private final boolean retained;
+    // True when the scan returns partial aggregates (an aggregation was pushed) instead of rows.
+    private final boolean aggregated;
     // WHERE conditions applied by the last runtime filtering, for the plan description and tests.
     private List<String> runtimeConditions = List.of();
 
@@ -82,12 +84,35 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
      * @param retained - true when the pushed predicates were returned to Spark as well
      */
     public FlightScan(Configuration configuration, Table table, Replanner replanner, boolean retained) {
+        this(configuration, table, replanner, retained, false);
+    }
+
+    /**
+     * Construct a FlightScan that may accept runtime filters and may return partial aggregates.
+     * @param configuration - the configuration of remote flight service
+     * @param table - the table object
+     * @param replanner - plans the scan again with extra conditions, or null to refuse runtime filters
+     * @param retained - true when the pushed predicates were returned to Spark as well
+     * @param aggregated - true when an aggregation was pushed into the scan
+     */
+    public FlightScan(Configuration configuration, Table table, Replanner replanner, boolean retained,
+            boolean aggregated) {
         LOGGER.debug("{}()", this.getClass().getName());
 
         this.configuration = configuration;
         this.table = table;
         this.replanner = replanner;
         this.retained = retained;
+        this.aggregated = aggregated;
+    }
+
+    /**
+     * Tells whether the scan returns partial aggregates of a pushed aggregation instead of rows.
+     *
+     * @return true when an aggregation was pushed
+     */
+    public boolean aggregated() {
+        return this.aggregated;
     }
 
     /**
