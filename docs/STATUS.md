@@ -52,21 +52,10 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         `contains`-shaped LIKEs could be pushed or the transfer of strings made cheaper (string vector
         conversion in `FlightArrowColumnVector`?). Q5 1.3-1.5x — its plan has two SortMergeJoins where direct
         has one (scan size estimates for filtered `orders`/`customer`; compare `estimateStatistics` with the
-        Parquet relation's). Q7 ~1.3x, Q3 1.1-1.3x. Perf run 40779266604 (ANSI on) has all plans as artifact;
-    (a2) Spark 3.5 + ANSI: TPC-H Q17 fails through the connector (`[ARITHMETIC_OVERFLOW] Overflow in sum of
-        decimals`, Perf run 40779266604; README "known issue"). Cause (stack trace): in the correlated subquery
-        `avg(l_quantity)` is pushed as partial SUM+COUNT; Spark merges the counts with `Sum` (null on no rows);
-        `RewriteCorrelatedScalarSubquery.evalAggExprOnZeroTups` then evaluates `If(null = 0, null,
-        DecimalDivideWithOverflowCheck(null, null))`, which throws in ANSI mode. Spark 4.0 passes. Repro on the
-        tiny data (ANSI session as in `SparkTpchQ1PushdownIntegrationTest`): `SELECT count(*) FROM direct_lineitem
-        o WHERE l_quantity < (SELECT 0.2 * avg(l_quantity) FROM flight_lineitem i WHERE i.l_partkey =
-        o.l_partkey)`. Fix idea: wrap the merged pushed counts (`Sum` over a LongType output of a FlightScan with a
-        pushed aggregation; the connector pushes SUM only for decimal/floating types, so such a Sum is always a
-        count) in `coalesce(..., 0)`. The rule must run after the subquery's V2 push-down and before the outer
-        plan's `RewriteCorrelatedScalarSubquery`: `injectOptimizerRule` rules come after that rewrite in the same
-        batch (too late), `injectPreCBORule` runs before push-down; only `experimental.extraOptimizations` (end of
-        the subquery's own optimisation run by `OptimizeSubqueries`) fits — check whether an extension can register
-        it safely, else decline: find another hook or leave it documented (an error, never wrong rows);
+        Parquet relation's). Q7 ~1.3x, Q3 1.1-1.3x. Perf run 40779266604 (ANSI on) has all plans as artifact.
+        Next session starts here, with Q13;
+    (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
+        scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
         comparison (numbers compared by value) but worth one line in the report;
     (c) optionally SF10 (`sf` input; runner disk/heap permitting) and a run with `partition.size`/result-mode
@@ -242,3 +231,16 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   in Next steps S5 (a2); Spark 4.0 passes the repro) — so that Perf run is red. Local `verify` (system `mvn`, 3.5):
   238 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; the new test also green on 4.0. CI run 40779248644
   green (4 jobs). Commits without `Co-Authored-By` trailer (CLAUDE.md). Next: S5 (a2), then the rest of (a).
+- 2026-10-28 (session): S5 (a2) done — Spark 3.5 + ANSI TPC-H Q17 failure fixed. New optimizer rule
+  `FlightPushedCounts`: rewrites Spark's merge of pushed partial counts (`sum` of a `bigint` column of a `FlightScan`
+  with a pushed aggregation, below Filters/Projects; the connector pushes SUM only for decimal/floating types) to
+  `coalesce(sum(count), 0)`, idempotently. Registered via reflection in the session's
+  `experimental.extraOptimizations` (the only hook that runs after a subquery's own push-down and before the outer
+  `RewriteCorrelatedScalarSubquery`) whenever a `FlightTable` is created (analysis time); failures only logged.
+  `FlightScan.aggregated()` added. Side effect: pushed `count(*)` is now non-null as Spark's own. README note replaces
+  the "known issue". Tests in `SparkTpchQ1PushdownIntegrationTest`: Q17-shaped correlated `avg` (with and without
+  outer rows whose subquery is empty; fails with `ARITHMETIC_OVERFLOW` without the rule, checked) and rule
+  idempotence. Spark 4.0 does not push that subquery's avg (results compared only). Local (system `mvn`, 3.5):
+  239 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; the test class green on 4.0. CI run 40788891671 green
+  (4 jobs); Perf run 40788895111 (SF1, ANSI on, Q17, parquet/flight/catalog) green, rows equal. Next: rest of S5 (a)
+  (Q13).
