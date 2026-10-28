@@ -34,7 +34,7 @@ class SparkFlightSmokeTest {
         injectSparkUser(System.getProperty("user.name", "root"));
 
         helper = TestFlightServerHelper.builder()
-                .dataDir(java.nio.file.Paths.get("../flight-server/src/test/resources/test_db")
+                .dataDir(java.nio.file.Paths.get("src/test/resources/test_db")
                         .toAbsolutePath().normalize().toString())
                 .start();
 

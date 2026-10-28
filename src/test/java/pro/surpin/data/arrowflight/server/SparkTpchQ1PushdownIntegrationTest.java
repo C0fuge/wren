@@ -57,7 +57,7 @@ class SparkTpchQ1PushdownIntegrationTest {
     @BeforeAll
     static void startServerAndSpark() throws Exception {
         injectSparkUser(System.getProperty("user.name", "root"));
-        Path dataDir = Paths.get("../flight-server/src/test/resources/lineitem_tiny")
+        Path dataDir = Paths.get("src/test/resources/lineitem_tiny")
                 .toAbsolutePath().normalize();
         helper = TestFlightServerHelper.builder()
                 .dataDir(dataDir.toString())
