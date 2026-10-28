@@ -4,6 +4,7 @@ import pro.surpin.data.arrowflight.server.KerberosTestAuthenticator;
 import org.apache.arrow.flight.FlightServer;
 import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.NoOpFlightProducer;
+import org.apache.arrow.flight.auth2.CallHeaderAuthenticator;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.bouncycastle.asn1.x500.X500Name;
@@ -29,7 +30,7 @@ import java.util.Date;
 
 /**
  * A TLS Flight server (self-signed certificate for localhost) that authenticates with the server's
- * Kerberos authenticator; only {@link #TICKET} is accepted as a SPNEGO ticket.
+ * Kerberos authenticator: by default only {@link #TICKET} is accepted as a SPNEGO ticket.
  */
 final class KerberosFlightServerFixture implements AutoCloseable {
     static final byte[] TICKET = "test-spnego-ticket".getBytes(StandardCharsets.UTF_8);
@@ -42,11 +43,21 @@ final class KerberosFlightServerFixture implements AutoCloseable {
     private final X509Certificate certificate;
 
     /**
-     * Starts the server on a free port.
+     * Starts the server on a free port with the stub ticket check.
      *
      * @throws Exception on startup failure
      */
     KerberosFlightServerFixture() throws Exception {
+        this(KerberosTestAuthenticator.accepting(TICKET, PRINCIPAL, SECRET));
+    }
+
+    /**
+     * Starts the server on a free port with the given authenticator.
+     *
+     * @param authenticator Flight header authenticator
+     * @throws Exception on startup failure
+     */
+    KerberosFlightServerFixture(CallHeaderAuthenticator authenticator) throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
         KeyPair keys = generator.generateKeyPair();
@@ -61,7 +72,7 @@ final class KerberosFlightServerFixture implements AutoCloseable {
         byte[] key = pem("PRIVATE KEY", keys.getPrivate().getEncoded());
         server = FlightServer.builder(allocator, Location.forGrpcTls("localhost", 0), new NoOpFlightProducer())
                 .useTls(new ByteArrayInputStream(certificatePem()), new ByteArrayInputStream(key))
-                .headerAuthenticator(KerberosTestAuthenticator.accepting(TICKET, PRINCIPAL, SECRET))
+                .headerAuthenticator(authenticator)
                 .build()
                 .start();
     }
