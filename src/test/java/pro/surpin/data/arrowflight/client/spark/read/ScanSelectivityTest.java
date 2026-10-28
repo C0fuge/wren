@@ -212,8 +212,8 @@ class ScanSelectivityTest {
         Predicate and = new Predicate("AND", new Expression[]{compare("<", 50, DataTypes.IntegerType),
                 new Predicate("=", new Expression[]{FieldReference.column("name"),
                         LiteralValue.apply(UTF8String.fromString("x"), DataTypes.StringType)})});
-        assertEquals(java.util.List.of("id", "name"),
-                java.util.List.copyOf(ScanSelectivity.columns(new Predicate[]{and})));
+        // Spark 4 lists the references of a predicate in another order than Spark 3.5.
+        assertEquals(java.util.Set.of("id", "name"), ScanSelectivity.columns(new Predicate[]{and}));
         assertEquals(0.05, ScanSelectivity.of(new Predicate[]{and}, idStats(null)), EPS);
         Predicate not = new Predicate("NOT", new Expression[]{compare(">", 200, DataTypes.IntegerType)});
         assertEquals(1.0, ScanSelectivity.of(not, idStats(null)), EPS);

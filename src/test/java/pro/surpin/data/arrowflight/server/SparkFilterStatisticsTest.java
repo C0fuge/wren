@@ -61,11 +61,11 @@ class SparkFilterStatisticsTest {
                 .load();
     }
 
-    /** Rows Spark estimates for the Flight scan (the plan's leaf) of a query. */
+    /** Rows Spark estimates for a query whose filter is fully pushed, so its optimized plan is the Flight scan. */
     private static long scanRows(Dataset<Row> df) {
-        LogicalPlan leaf = df.queryExecution().optimizedPlan().collectLeaves().head();
-        assertTrue(leaf.stats().rowCount().isDefined(), "scan reports a row count: " + leaf);
-        return leaf.stats().rowCount().get().longValue();
+        LogicalPlan plan = df.queryExecution().optimizedPlan();
+        assertTrue(plan.stats().rowCount().isDefined(), "scan reports a row count: " + plan);
+        return plan.stats().rowCount().get().longValue();
     }
 
     @Test

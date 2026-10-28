@@ -112,7 +112,7 @@ final class ScanSelectivity {
      * Names the columns whose statistics refine the estimate of the predicates.
      *
      * @param predicates pushed predicates
-     * @return column names, in order of appearance
+     * @return column names
      */
     static Set<String> columns(Predicate[] predicates) {
         Set<String> names = new LinkedHashSet<>();
