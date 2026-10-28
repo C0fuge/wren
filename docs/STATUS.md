@@ -22,9 +22,14 @@
 
 (S1 Kerberos on YARN executors: done 2026-10-28, see Log.)
 
-S2. **Build matrix.** Maven profiles for Spark 3.3 / 3.4 / 3.5 (Scala 2.12) and Spark 4.0 (Scala 2.13, JDK 17/21);
-    CI matrix over them. Check the shaded jar against a Hadoop 3.1.3 client classpath: Netty, protobuf, Guava and
-    Jackson relocated, no clashes (a test that loads the shaded jar next to Hadoop 3.1.3 client jars).
+S2. **Build matrix.** Part 1 done 2026-10-28 (profiles `spark-3.3/3.4/3.5/4.0`, CI matrix; see Log). Next (part 2):
+    check the shaded jar against a Hadoop 3.1.3 client classpath: relocate Netty, protobuf, Guava (Jackson already
+    is) in the shade config, then a test (own tag or a separate surefire execution after `package`) that loads
+    `target/*-shaded.jar` in a fresh class loader next to Hadoop 3.1.3 client jars (resolved with
+    `maven-dependency-plugin:copy` into `target/`) and reads a table from the in-process server through it (no
+    `LinkageError` / `NoSuchMethodError`). Watch: relocating Netty needs the native epoll libs renamed
+    (`META-INF/native/libnetty_*` -> shaded prefix) or the NIO fallback; gRPC's service files need the
+    `ServicesResourceTransformer` (present). Then the shaded jar's name could carry the Scala/Spark line.
 S3. **Spark catalog.** A proper `TableCatalog` + `SupportsNamespaces` over the server's metadata (schemas, tables,
     columns), configured as `spark.sql.catalog.<name>=<class>` with options under that prefix; `SHOW NAMESPACES`,
     `SHOW TABLES`, `DESCRIBE`, `SELECT` through the catalog; tests in Spark local mode.
@@ -43,6 +48,13 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   a local cluster whose backend creates the manager as YARN does (`TokenManagingLocalClusterManager`).
 
 - Spark versions on the production cluster (pending from the maintainer) — decides the default profile in S2.
+- For the server/client core (found 2026-10-28 by the S2 matrix): `arrow-flight-client-core` is Java 21 bytecode
+  and uses Java 21 language features (pattern matching in `switch`: `Expr`, `SqlRenderer`), so the connector runs
+  on JDK 21 only. Spark 3.3 and 3.4 cannot start on JDK 21 (`org.apache.spark.unsafe.Platform` looks up
+  `DirectByteBuffer(long,int)`, removed in JDK 21; fixed in Spark 3.5), so those lines compile here (CI checks them)
+  but are untestable and unusable. Supporting them needs the client core (and this connector) built for release 17;
+  the server-side work is replacing the `switch` patterns. Also, if they are ever tested: Spark 3.3 brings Parquet
+  1.12 (no `LZ4_RAW`), which breaks the in-process server on the test class path (pin Parquet in that profile).
 - For the server/client core (forward, no change needed now): executors build one pooled `Client` per session
   (the client core pools by credentials and never evicts), so a long job leaves ~8 idle clients per executor and
   hour (sessions last 10 min, re-obtained every ~7.5). A client-core hook to swap the bearer of a pooled Kerberos
@@ -87,3 +99,11 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   shipped session and did SPNEGO; they now use `FlightSessionTokens.resolve`. KDC setup shared in
   `KerberosKdcFixture`. Local `verify` (system `mvn`): 192 tests, 0 failures, Checkstyle 0, SpotBugs 0; CI run
   40686668051 green. Next: S2 (build matrix).
+- 2026-10-28 (session): S2 part 1 — Maven profiles `spark-3.3` (3.3.4), `spark-3.4` (3.4.4), `spark-3.5` (3.5.9,
+  default) and `spark-4.0` (4.0.5, Scala 2.13; `scala.binary.version` property), CI matrix over them (3.3/3.4 with
+  `-DskipTests`: they cannot start on JDK 21, see Open questions). Fixes: `GenericInternalRow` instead of
+  `InternalRow.fromSeq` (Scala 2.13), TimestampNTZ literal matched by type name (3.3); tests set `spark.driver.host`
+  to the bound address (Spark 4 executors fetch session classes from the driver: connection refused otherwise) and
+  cast explicitly in the boolean = tinyint join (Spark 4 ANSI default). Local (system `mvn`): 3.5 and 4.0 each 192
+  tests, 0 failures, Checkstyle 0, SpotBugs 0; 3.3/3.4 compile + checks. CI run 40706483617 green (4 jobs). Commits
+  carry no `Co-Authored-By` trailer (CLAUDE.md: no trailer e-mail). Next: S2 part 2 (Hadoop 3.1.3 / shading).
