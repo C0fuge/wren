@@ -1,0 +1,95 @@
+# TPC-H through Spark local mode (S5 in docs/STATUS.md): the connector against a separate Flight server
+# process (built at kestrel.ref), Spark reading the same Parquet directly, and Spark's JDBC data source over
+# the Flight SQL JDBC driver. On request only (perf tests never run in ci.yml). All result files are kept
+# as an artifact (times of every run, summary, executed plans, server log) so a run never needs repeating.
+name: Perf
+
+on:
+  workflow_dispatch:
+    inputs:
+      sf:
+        description: "TPC-H scale factor"
+        type: string
+        default: "1"
+      runs:
+        description: "Timed runs per query and mode"
+        type: string
+        default: "3"
+      modes:
+        description: "Modes besides the parquet reference (parquet,flight,jdbc)"
+        type: string
+        default: "parquet,flight,jdbc"
+      queries:
+        description: "all, or query numbers (1,6,14)"
+        type: string
+        default: "all"
+      kestrel_ref:
+        description: "Server repository commit/branch (default: kestrel.ref)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf
+  cancel-in-progress: false
+
+env:
+  MAVEN_ARGS: --batch-mode --errors --no-transfer-progress
+  LC_ALL: C.UTF-8
+
+jobs:
+  tpch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: 21
+          distribution: temurin
+          cache: maven
+
+      - name: Server artifacts (kestrel at kestrel.ref)
+        env:
+          KESTREL_REF: ${{ inputs.kestrel_ref }}
+        run: |
+          [ -n "$KESTREL_REF" ] || unset KESTREL_REF
+          scripts/install-kestrel.sh
+
+      - name: Compile
+        run: ./mvnw -Pperf test-compile
+
+      - name: TPC-H
+        env:
+          SF: ${{ inputs.sf }}
+          RUNS: ${{ inputs.runs }}
+          MODES: ${{ inputs.modes }}
+          QUERIES: ${{ inputs.queries }}
+          OUT: ${{ github.workspace }}/target/perf
+          TEST_JVM_OPTIONS: -Xmx8g
+        run: |
+          nproc; free -g
+          scripts/perf/tpch.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "TPC-H SF ${{ inputs.sf }}, modes ${{ inputs.modes }}"; echo
+            cat target/perf/summary.md 2>/dev/null || echo "no summary"
+            if [ -s target/perf/errors.txt ]; then echo; echo '```'; head -c 20000 target/perf/errors.txt; echo '```'; fi
+            echo; echo '```'; cat target/perf/env.txt 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tpch-sf${{ inputs.sf }}-${{ github.run_id }}
+          path: |
+            target/perf/
+            target/surefire-reports/
+          retention-days: 90
+          if-no-files-found: warn

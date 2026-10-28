@@ -419,7 +419,20 @@
             <properties>
                 <groups>perf</groups>
                 <excludedGroups />
+                <!-- The coverage agent instruments Spark's classes too: TPC-H Q1 took minutes with it. -->
+                <jacoco.skip>true</jacoco.skip>
+                <argLine />
             </properties>
+            <dependencies>
+                <!-- JDBC baseline of TpchPerfTest (Spark's JDBC data source); perf runs only, so the
+                     driver's bundled classes never reach the other tests' class path. -->
+                <dependency>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>flight-sql-jdbc-driver</artifactId>
+                    <version>${arrow.version}</version>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
         </profile>
         <profile>
             <id>real-services</id>

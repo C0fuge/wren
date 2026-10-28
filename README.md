@@ -130,6 +130,17 @@ spark-submit --principal user@REALM --keytab user.keytab \
 - Spark creates its delegation token manager on YARN and Kubernetes only; on a standalone cluster nothing is
   shipped and executors need their own Kerberos login.
 
+## Performance (TPC-H)
+
+`scripts/perf/tpch.sh` (after `scripts/install-kestrel.sh`) generates TPC-H Parquet data (`tpchgen-cli`, scale
+factor `SF`, default 1), starts the server (built at `kestrel.ref`) on it as a separate process, and runs the 22
+queries in Spark local mode (`TpchPerfTest`, `-Pperf`) three ways: Spark reading the Parquet files directly (the
+reference), the connector (`format("flight")`), and Spark's JDBC data source with the Flight SQL JDBC driver
+(baseline; big tables split into key ranges). Every mode's rows are compared with the reference. Results in
+`target/perf`: `times.csv` (every run), `summary.md` (medians, totals, ratios), `plans/` (executed plans),
+`env.txt`, `server.log`. In GitHub Actions: workflow `Perf` (manual, inputs `sf`, `runs`, `modes`, `queries`),
+results kept as an artifact.
+
 ## License
 
 Apache License 2.0 (see `LICENSE`).
