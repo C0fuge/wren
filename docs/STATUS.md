@@ -28,15 +28,41 @@ the shaded jar's name, e.g. `-spark3.5_2.12-shaded.jar`; changes the documented 
 (S3 Spark catalog: done 2026-10-28, see Log. Possible follow-ups, not scheduled: case-insensitive name
 matching, `CREATE TABLE ... AS SELECT` through the catalog, column comments / table statistics in `DESCRIBE`.)
 
-S4. **Upstream ideas.** Look at upstream github.com/VadimSurpin/arrow-flight-server branch
-    `feat/starrocks-native-integration`, Spark side: runtime / bloom filters, AQE guard, post-pushdown statistics
-    (part of the statistics is already here). Port clear wins with tests; anything that changes the server ticket
-    format goes to Open questions first.
+S4. **Upstream ideas.** Upstream github.com/VadimSurpin/arrow-flight-server branch
+    `feat/starrocks-native-integration`, `flight-spark` (compared 2026-10-28 at upstream 1de5f6b). Part 1 done
+    (server column statistics in the filter estimate, see Log). Remaining, in this order:
+    (b) **Runtime filtering** (upstream `FlightScan implements SupportsRuntimeV2Filtering`, `Replanner`,
+        `FlightScanBuilder` `spark.flight.retainPushedFilters` / `retainMaxRows` / `retainMaxSelectivity`,
+        `FlightAqeGuard` session extension): `filterAttributes()` = integer columns of big tables
+        (`spark.flight.runtimeFilterMinRows`, upstream default 50M); `filter(IN ...)` re-plans the scan with an
+        extra WHERE condition (IN list up to 100k keys, from `spark.flight.runtimeBloomMinKeys` keys a min/max
+        range instead); needs no server change. Port without the bloom part. Upstream keeps it off by default
+        (`retainPushedFilters=false`: huge IN lists exhausted server memory); keep it opt-in. Spark 3.5 AQE can
+        deadlock when a plan scans one table twice with a retained filter: port `FlightAqeGuard` with it (check
+        whether Spark 4.0 still needs it). Test: Spark local mode join of a small filtered side with a bigger
+        table (lower `runtimeFilterMinRows`), assert the re-planned query statement carries the keys and the
+        join result equals the unfiltered one.
+    (c) Spark CBO column statistics (`estimateStatistics().columnStats()`, upstream `FlightColumnStatistics.convert`):
+        only useful once the server sends distinct counts (kestrel's action sends `ndv: null`; upstream reports a
+        column only with ndv + min + max, a missing bound makes Spark estimate empty joins). Waits on the server
+        (Open questions).
+    Not portable without server changes (Open questions): runtime bloom filters in the ticket, complete
+    aggregation push-down (`supportCompletePushDown`).
 S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-release jar from its releases) vs Spark
     reading the same Parquet directly; report per-query times and totals in the Log (record all metrics and raw
     files as CI artifacts so runs never need repeating).
 
 ## Open questions
+
+- For the server (found 2026-10-28 by S4, comparing upstream `feat/starrocks-native-integration`): three upstream
+  Spark features need server support kestrel (at `kestrel.ref`) lacks. (1) Runtime bloom filters: upstream appends
+  an "ARF2" block (split-block bloom filters with witness keys, upstream `RuntimeBloom`) to each endpoint ticket as
+  protobuf field 15, which upstream's server (`RuntimeFilters`, `SplitBlockBloom`) applies to the rows it returns;
+  a ticket format change, so not ported. (2) Complete aggregation push-down: upstream's statistics action reports
+  `separableGroups` per column (file groups sharing no value) and `PushAggregation.setCompleteBy` makes the server
+  keep those files in one endpoint, so Spark skips its final aggregation; needs both in kestrel. (3) Distinct counts
+  (`ndv`) in `arrowflight.table_statistics` (kestrel sends null): needed for Spark CBO column statistics and
+  sharper equality estimates. Does the maintainer want any of these in kestrel?
 
 - Spark's standalone backend never creates a delegation token manager (only YARN and Kubernetes do), so shipped
   Flight sessions work on YARN/K8s only; standalone clusters with Kerberos need a TGT on every executor. Tests use
@@ -128,3 +154,17 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   `SHOW NAMESPACES`/`SHOW TABLES`/`DESCRIBE`/`SELECT` with pushdown, same rows as `format("flight")`, `USE`,
   missing names, DDL). Local (system `mvn`): 3.5 208 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0 (USE test
   added after: green on 3.5 and 4.0); 3.3 compiles. CI run 40725071252 green (4 jobs). Next: S4 (upstream ideas).
+- 2026-10-28 (session): S4 part 1 — compared upstream `feat/starrocks-native-integration` `flight-spark` (at
+  1de5f6b) with this repo: runtime filtering + AQE guard, runtime bloom filters, server column statistics, complete
+  aggregation push-down; plan and server dependencies in Next steps S4 / Open questions. Ported the statistics part
+  that the pinned server supports: with `statistics.filterSelectivity=true` a plain `schema.table` scan asks the
+  server's `arrowflight.table_statistics` action (new `ServerColumnStatistics`, through `FlightSessionTokens` so
+  shipped Kerberos sessions apply) for the filtered columns; `ScanSelectivity` uses footer bounds for ranges (value
+  outside the bounds -> no rows, i.e. the one-row floor), null counts for `IS [NOT] NULL`, distinct counts for
+  equality / IN when present; literals in the server's units (dates epoch days, timestamps epoch seconds); any
+  failure or other source -> the old fixed defaults (unchanged; off by default, no extra call). README "Scan
+  statistics". 9 new tests (`ScanSelectivityTest` stats cases, `SparkFilterStatisticsTest` Spark local mode: `id >
+  max` estimated at 1 row, half the range ~half the rows, string column default). Spark 4.0 found two test issues
+  (Scala `collectLeaves` signature, `Predicate.references()` order), fixed. Local (system `mvn`): 3.5 219 tests + 2
+  IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0 the new tests green. CI run 40737627818 red (4.0 tests), 40738746483
+  green (4 jobs). Next: S4 (b) runtime filtering.
