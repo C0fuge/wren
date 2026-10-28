@@ -17,7 +17,10 @@ import org.apache.spark.sql.connector.write.WriteBuilder;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -58,6 +61,8 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
     private final Configuration configuration;
     //the table description
     private final Table table;
+    //scan options configured for every scan of this table (lower-case keys), e.g. by FlightCatalog
+    private final Map<String, String> scanDefaults;
 
     //the table capabilities
     private final Set<TableCapability> capabilities = new HashSet<>();
@@ -68,8 +73,19 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
      * @param table - the table instance pointing to a remote flight-table
      */
     public FlightTable(Configuration configuration, Table table) {
+        this(configuration, table, Map.of());
+    }
+
+    /**
+     * Construct a flight-table whose scans start from default options
+     * @param configuration  - the configuration of remote flight-service
+     * @param table - the table instance pointing to a remote flight-table
+     * @param scanDefaults - scan options with lower-case keys; the options of a scan override them
+     */
+    public FlightTable(Configuration configuration, Table table, Map<String, String> scanDefaults) {
         this.configuration = configuration;
         this.table = table;
+        this.scanDefaults = Map.copyOf(scanDefaults);
 
         //the data-source supports batch read/write, truncate the table
         this.capabilities.add(TableCapability.ACCEPT_ANY_SCHEMA);
@@ -112,7 +128,8 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
      * @return - A scan builder
      */
     @Override
-    public ScanBuilder newScanBuilder(CaseInsensitiveStringMap options) {
+    public ScanBuilder newScanBuilder(CaseInsensitiveStringMap scanOptions) {
+        CaseInsensitiveStringMap options = withDefaults(this.scanDefaults, scanOptions);
         // ScanBuilder pushdown mutates Table's statement/schema/endpoints. Keep that
         // state private to this scan so concurrent Thrift queries cannot overwrite
         // one another's tickets or projected schemas.
@@ -134,6 +151,21 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
         );
         return new FlightScanBuilder(this.configuration, scanTable, partitionBehavior,
             Boolean.parseBoolean(options.getOrDefault(FlightTable.STATISTICS_FILTER_SELECTIVITY, "false")));
+    }
+
+    /**
+     * Merges default scan options with the options of one scan; the scan's options win.
+     * @param defaults - default options with lower-case keys
+     * @param options - the options of the scan
+     * @return - the merged options
+     */
+    static CaseInsensitiveStringMap withDefaults(Map<String, String> defaults, CaseInsensitiveStringMap options) {
+        if (defaults.isEmpty()) {
+            return options;
+        }
+        Map<String, String> merged = new HashMap<>(defaults);
+        options.asCaseSensitiveMap().forEach((k, v) -> merged.put(k.toLowerCase(Locale.ROOT), v));
+        return new CaseInsensitiveStringMap(merged);
     }
 
     /**

@@ -64,10 +64,12 @@ public class FlightSource implements TableProvider, DataSourceRegister, Relation
     }
 
     /**
-     * Extract and validate connection options from the provided options map
+     * Builds the connection configuration from the connection, account, TLS, workload and retry
+     * options (everything but the table); shared by reads, writes and {@link FlightCatalog}.
      * @param options - the case-insensitive options map
+     * @return - the connection configuration
      */
-    private void probeOptions(CaseInsensitiveStringMap options, boolean initialize) {
+    static Configuration configuration(CaseInsensitiveStringMap options) {
         //host & port
         String host = options.getOrDefault(FlightSource.HOST, "");
         int port = Integer.parseInt(options.getOrDefault(FlightSource.PORT, "32010"));
@@ -90,30 +92,39 @@ public class FlightSource implements TableProvider, DataSourceRegister, Relation
         String truststoreJks = options.getOrDefault(FlightSource.TLS_TRUSTSTORE_JKS, "");
         String truststorePass = options.getOrDefault(FlightSource.TLS_TRUSTSTORE_PASS, "");
         //set up the configuration object
-        this.configuration = (truststoreJks != null && !truststoreJks.isEmpty())
+        Configuration configuration = (truststoreJks != null && !truststoreJks.isEmpty())
             ? new Configuration(host, port, truststoreJks, truststorePass, user, password, bearerToken) : new Configuration(host, port, tlsEnabled, tlsEnabled && tlsVerify, user, password, bearerToken);
         if (!kerberosPrincipal.isEmpty()) {
-            this.configuration.setKerberosServicePrincipal(kerberosPrincipal);
+            configuration.setKerberosServicePrincipal(kerberosPrincipal);
         }
 
         //set the schema path, routing tag & queue if any to manage work-loads
-        this.configuration.setDefaultSchema(options.getOrDefault(FlightSource.KEY_DEFAULT_SCHEMA, ""));
-        this.configuration.setRoutingTag(options.getOrDefault(FlightSource.KEY_ROUTING_TAG, ""));
-        this.configuration.setRoutingQueue(options.getOrDefault(FlightSource.KEY_ROUTING_QUEUE, ""));
+        configuration.setDefaultSchema(options.getOrDefault(FlightSource.KEY_DEFAULT_SCHEMA, ""));
+        configuration.setRoutingTag(options.getOrDefault(FlightSource.KEY_ROUTING_TAG, ""));
+        configuration.setRoutingQueue(options.getOrDefault(FlightSource.KEY_ROUTING_QUEUE, ""));
 
         //retry and timeout settings
         String maxRetries = options.get(FlightSource.KEY_MAX_RETRIES);
         if (maxRetries != null) {
-            this.configuration.setMaxRetries(Integer.parseInt(maxRetries));
+            configuration.setMaxRetries(Integer.parseInt(maxRetries));
         }
         String retryBackoff = options.get(FlightSource.KEY_RETRY_BACKOFF_MS);
         if (retryBackoff != null) {
-            this.configuration.setRetryBackoffMs(Long.parseLong(retryBackoff));
+            configuration.setRetryBackoffMs(Long.parseLong(retryBackoff));
         }
         String connectTimeout = options.get(FlightSource.KEY_CONNECT_TIMEOUT_MS);
         if (connectTimeout != null) {
-            this.configuration.setConnectTimeoutMs(Long.parseLong(connectTimeout));
+            configuration.setConnectTimeoutMs(Long.parseLong(connectTimeout));
         }
+        return configuration;
+    }
+
+    /**
+     * Extract and validate connection options from the provided options map
+     * @param options - the case-insensitive options map
+     */
+    private void probeOptions(CaseInsensitiveStringMap options, boolean initialize) {
+        this.configuration = FlightSource.configuration(options);
 
         //the table name
         String requestedTableName = options.getOrDefault(FlightSource.TABLE, "");

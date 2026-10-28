@@ -37,6 +37,35 @@ Netty with its native libraries, gRPC, protobuf, Guava, Gson, Jackson, Apache Co
 `./mvnw verify` checks that (`ShadedJarHadoop313IT`): Spark of the build line plus a Hadoop 3.1.3 client
 (`src/test/hadoop-3.1.3/pom.xml`) with only the shaded jar added reads a table from the in-process server.
 
+## Spark catalog
+
+`FlightCatalog` exposes the server's schemas as Spark namespaces and its tables as Spark tables, read through the
+connector (same pushdown and columnar reads as `format("flight")`):
+
+```sh
+spark-sql \
+  --conf spark.sql.catalog.flight=pro.surpin.data.arrowflight.client.spark.FlightCatalog \
+  --conf spark.sql.catalog.flight.host=flight-host \
+  --conf spark.sql.catalog.flight.port=32010 \
+  --conf spark.sql.catalog.flight.user=... --conf spark.sql.catalog.flight.password=...
+```
+
+```sql
+SHOW NAMESPACES IN flight;
+SHOW TABLES IN flight.tpch;
+DESCRIBE TABLE flight.tpch.lineitem;
+SELECT l_returnflag, count(*) FROM flight.tpch.lineitem GROUP BY l_returnflag;
+```
+
+- Options under `spark.sql.catalog.<name>.` are the read options without `table`: connection, credentials, TLS,
+  Kerberos (`kerberos.servicePrincipal`, works with shipped sessions as below), `client.*`, `column.quote`, and scan
+  options such as `partition.size` or `statistics.filterSelectivity`, which become defaults for every scan of the
+  catalog's tables. `default.schema` is also the catalog's default namespace (after `USE flight`,
+  `SELECT * FROM lineitem` resolves in it).
+- Listings come from the Flight SQL `GetDbSchemas` / `GetTables` commands, so the server's authorization decides
+  what is visible. Names are matched exactly (case-sensitive); one namespace level only.
+- Read-only: `CREATE`/`ALTER`/`DROP` of namespaces and tables fail. Writes go through `format("flight")`.
+
 ## Kerberos on YARN
 
 With `kerberos.servicePrincipal` (TLS required) every process authenticates with SPNEGO, so executors would need
