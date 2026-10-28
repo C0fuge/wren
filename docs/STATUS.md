@@ -43,18 +43,42 @@ S4. **Upstream ideas.** Upstream github.com/VadimSurpin/arrow-flight-server bran
     aggregation push-down (`supportCompletePushDown`).
 S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading the same Parquet directly, with
     Spark's JDBC data source + Flight SQL JDBC driver as baseline (maintainer, 15:00). Part 1 done (harness, see
-    Log): `scripts/perf/tpch.sh`, `TpchPerfTest` (-Pperf), workflow `Perf` (manual; all files as artifact). Next:
-    (a) Q1/Q5/Q13/Q7 are slower through the connector than direct (CI SF1: 2.2x / 1.8x / 1.5x / 1.3x): Q1's
-        plan shows Spark aggregating itself over a `BatchScan` (no aggregate push-down via temp views of
-        `format("flight")`; `SparkTpchQ1PushdownIntegrationTest` pushes it via `FlightSessionCatalog`). Add a
-        `catalog` mode (`FlightCatalog`, `flight.tpch.*` names) and find out why the view path does not push
-        (compare `plans/flight/q01.txt` in the artifact; the scan's SQL is in the `BatchScan` line);
+    Log): `scripts/perf/tpch.sh`, `TpchPerfTest` (-Pperf; modes parquet/flight/catalog/jdbc, `ANSI=`), workflow
+    `Perf` (manual; all files as artifact). Next:
+    (a) Q1 explained (2026-10-28, see Log): Spark pushes arithmetic aggregates only with
+        `spark.sql.ansi.enabled=true`; views and `FlightCatalog` behave the same. Remaining slower-than-direct
+        queries (local SF1, ANSI on): Q13 1.7x — `NOT LIKE '%special%requests%'` is not a DSv2 predicate (only
+        STARTS_WITH/ENDS_WITH/CONTAINS translate), so every `o_comment` string crosses the wire; look at whether
+        `contains`-shaped LIKEs could be pushed or the transfer of strings made cheaper (string vector
+        conversion in `FlightArrowColumnVector`?). Q5 1.3-1.5x — its plan has two SortMergeJoins where direct
+        has one (scan size estimates for filtered `orders`/`customer`; compare `estimateStatistics` with the
+        Parquet relation's). Q7 ~1.3x, Q3 1.1-1.3x. Perf run 40779266604 (ANSI on) has all plans as artifact;
+    (a2) Spark 3.5 + ANSI: TPC-H Q17 fails through the connector (`[ARITHMETIC_OVERFLOW] Overflow in sum of
+        decimals`, Perf run 40779266604; README "known issue"). Cause (stack trace): in the correlated subquery
+        `avg(l_quantity)` is pushed as partial SUM+COUNT; Spark merges the counts with `Sum` (null on no rows);
+        `RewriteCorrelatedScalarSubquery.evalAggExprOnZeroTups` then evaluates `If(null = 0, null,
+        DecimalDivideWithOverflowCheck(null, null))`, which throws in ANSI mode. Spark 4.0 passes. Repro on the
+        tiny data (ANSI session as in `SparkTpchQ1PushdownIntegrationTest`): `SELECT count(*) FROM direct_lineitem
+        o WHERE l_quantity < (SELECT 0.2 * avg(l_quantity) FROM flight_lineitem i WHERE i.l_partkey =
+        o.l_partkey)`. Fix idea: wrap the merged pushed counts (`Sum` over a LongType output of a FlightScan with a
+        pushed aggregation; the connector pushes SUM only for decimal/floating types, so such a Sum is always a
+        count) in `coalesce(..., 0)`. The rule must run after the subquery's V2 push-down and before the outer
+        plan's `RewriteCorrelatedScalarSubquery`: `injectOptimizerRule` rules come after that rewrite in the same
+        batch (too late), `injectPreCBORule` runs before push-down; only `experimental.extraOptimizations` (end of
+        the subquery's own optimisation run by `OptimizeSubqueries`) fits — check whether an extension can register
+        it safely, else decline: find another hook or leave it documented (an error, never wrong rows);
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
         comparison (numbers compared by value) but worth one line in the report;
     (c) optionally SF10 (`sf` input; runner disk/heap permitting) and a run with `partition.size`/result-mode
         variations.
 
 ## Open questions
+
+- For the maintainer (found 2026-10-28 by S5 a): on Spark 3.5 (`spark.sql.ansi.enabled=false` by default) no
+  aggregate with `+ - * /` is pushed (TPC-H Q1 ~6x slower at SF1). Options: run production jobs with ANSI mode
+  (also changes Spark's own overflow/cast behaviour: errors instead of nulls), or an opt-in connector optimizer
+  rule that pushes such aggregates anyway — but then overflow semantics differ (Spark non-ANSI: null; DuckDB:
+  error), so it would need the maintainer's go-ahead. Is ANSI mode an option on the cluster?
 
 - For the server (found 2026-10-28 by S4, comparing upstream `feat/starrocks-native-integration`): three upstream
   Spark features need server support kestrel (at `kestrel.ref`) lacks. (1) Runtime bloom filters: upstream appends
@@ -205,3 +229,16 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   Q14, Q17, Q19 (0.48-0.59x: filters/joins pushed to DuckDB), slower on Q1 2.16x, Q5 1.80x, Q13 1.50x, Q7 1.31x.
   This session's lock commit again carries a `Co-Authored-By` trailer by mistake (no rewrite of `main`). Next:
   S5 (a).
+- 2026-10-28 (session): S5 (a) — why Q1 was 2.2x slower than direct: Spark translates `+ - * /` into connector
+  expressions only in ANSI mode (`spark.sql.ansi.enabled`, default false on 3.5), so Q1's arithmetic SUMs keep the
+  whole aggregation in Spark; temp views and `FlightCatalog` behave the same (not a view problem). `TpchPerfTest`:
+  mode `catalog` (tables of `FlightCatalog`), `perf.ansi` (`ANSI=` in `tpch.sh`, `ansi` input of `Perf`; recorded
+  in `env.txt`). New test `SparkTpchQ1PushdownIntegrationTest.nonAnsiPushesOnlyAggregatesWithoutArithmetic`
+  (Q1 not pushed but equal without ANSI, plain-column aggregates pushed). README: ANSI note + known issue. Local
+  SF1 (Q1/5/7/13, 3 runs): ANSI off connector 1.85x direct (Q1 2.30x), ANSI on 0.96x (Q1 0.18x). Perf run
+  40779266604 (SF1, ANSI on, parquet/flight/catalog, sum of medians without Q17): flight 0.94x, catalog 0.89x of
+  direct; Q1 0.12x, slower still Q5 1.66x, Q13 1.46x, Q7 1.29x, Q3 1.27x; all rows equal except Q17, which fails
+  in both connector modes (Spark 3.5 bug with pushed AVG in a correlated subquery under ANSI; analysis and repro
+  in Next steps S5 (a2); Spark 4.0 passes the repro) — so that Perf run is red. Local `verify` (system `mvn`, 3.5):
+  238 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; the new test also green on 4.0. CI run 40779248644
+  green (4 jobs). Commits without `Co-Authored-By` trailer (CLAUDE.md). Next: S5 (a2), then the rest of (a).
