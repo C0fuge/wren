@@ -30,18 +30,11 @@ matching, `CREATE TABLE ... AS SELECT` through the catalog, column comments / ta
 
 S4. **Upstream ideas.** Upstream github.com/VadimSurpin/arrow-flight-server branch
     `feat/starrocks-native-integration`, `flight-spark` (compared 2026-10-28 at upstream 1de5f6b). Part 1 done
-    (server column statistics in the filter estimate, see Log). Remaining, in this order:
-    (b) **Runtime filtering** (upstream `FlightScan implements SupportsRuntimeV2Filtering`, `Replanner`,
-        `FlightScanBuilder` `spark.flight.retainPushedFilters` / `retainMaxRows` / `retainMaxSelectivity`,
-        `FlightAqeGuard` session extension): `filterAttributes()` = integer columns of big tables
-        (`spark.flight.runtimeFilterMinRows`, upstream default 50M); `filter(IN ...)` re-plans the scan with an
-        extra WHERE condition (IN list up to 100k keys, from `spark.flight.runtimeBloomMinKeys` keys a min/max
-        range instead); needs no server change. Port without the bloom part. Upstream keeps it off by default
-        (`retainPushedFilters=false`: huge IN lists exhausted server memory); keep it opt-in. Spark 3.5 AQE can
-        deadlock when a plan scans one table twice with a retained filter: port `FlightAqeGuard` with it (check
-        whether Spark 4.0 still needs it). Test: Spark local mode join of a small filtered side with a bigger
-        table (lower `runtimeFilterMinRows`), assert the re-planned query statement carries the keys and the
-        join result equals the unfiltered one.
+    (server column statistics in the filter estimate, see Log). Only (c) remains and it waits on the server, so the
+    next session takes S5:
+    (b) Runtime filtering: done 2026-10-28 (see Log). Possible follow-ups, not scheduled: check whether Spark 4.0
+        still deadlocks without `FlightAqeGuard` (not reproduced here; the guard is installed on both lines);
+        runtime filters on `date` keys.
     (c) Spark CBO column statistics (`estimateStatistics().columnStats()`, upstream `FlightColumnStatistics.convert`):
         only useful once the server sends distinct counts (kestrel's action sends `ndv: null`; upstream reports a
         column only with ndv + min + max, a missing bound makes Spark estimate empty joins). Waits on the server
@@ -168,3 +161,19 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   (Scala `collectLeaves` signature, `Predicate.references()` order), fixed. Local (system `mvn`): 3.5 219 tests + 2
   IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0 the new tests green. CI run 40737627818 red (4.0 tests), 40738746483
   green (4 jobs). Next: S4 (b) runtime filtering.
+- 2026-10-28 (session): S4 (b) done (runtime filtering, upstream port without bloom filters). Opt-in Spark
+  settings: `spark.flight.retainPushedFilters=true|auto` (default `false`) returns accepted predicates to Spark too
+  (`auto`: plain table with server statistics, `retainMaxRows` 50M, `retainMaxSelectivity` 0.1); only then does
+  `FlightScan` (now `SupportsRuntimeFiltering`, V1 so the 3.3 profile compiles) offer `int`/`bigint` columns of
+  scans with at least `runtimeFilterMinRows` (50M) rows to dynamic pruning, and `filter()` re-plans the scan with
+  the keys (IN list; from `runtimeFilterRangeMinKeys` (1000) keys a min/max range; > 100k non-integer keys
+  dropped; no re-plan for pushed aggregations). `FlightAqeGuard` ported (`spark.sql.extensions`); deviation from
+  upstream: it counts distinct scan objects, because the pruning subquery repeats the filtering side's scan and
+  upstream's count switched AQE off for every runtime-filtered plan. Found: without AQE Spark reuses the broadcast
+  for pruning only when the scans' batches are equal, so `FlightBatch.equals` (same table instance) was added —
+  otherwise the runtime filter became `true`. Settings read via `getActiveSession` (Spark 4's `active()` throws a
+  checked exception without a session). README "Runtime filtering". New tests: `SparkRuntimeFilterTest` (5, Spark
+  local mode: self-join with the guard, AQE path with a query source, range, `auto`, filtered `spark.range` side
+  offered nothing by default; results equal to unpruned), `FlightScanTest` (+4), `FlightScanBuilderTest` (+1),
+  `FlightAqeGuardTest`. Local (system `mvn`): 3.5 230 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0 the
+  new tests green; 3.3 compiles. CI run 40745229990 green (4 jobs). Next: S5 (perf).
