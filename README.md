@@ -32,9 +32,9 @@ relocated; Spark itself is `provided`).
 With `kerberos.servicePrincipal` (TLS required) every process authenticates with SPNEGO, so executors would need
 their own TGT. Instead, the driver can obtain a server session and ship it in the job credentials: the connector
 registers a Spark delegation token provider (service `flight`) that, when configured, authenticates to each listed
-server with the driver's Kerberos login and stores the signed session the server returns. Executors use that
-session instead of SPNEGO; without one they fall back to SPNEGO with their own login (and fail with an error
-naming what is missing).
+server with the driver's Kerberos login and stores the signed session the server returns. Executors (and the
+driver's own schema and endpoint planning) use that session instead of SPNEGO; without one they fall back to
+SPNEGO with their own login (and fail with an error naming what is missing).
 
 ```sh
 spark-submit --principal user@REALM --keytab user.keytab \
@@ -52,6 +52,8 @@ spark-submit --principal user@REALM --keytab user.keytab \
 - Server sessions last ten minutes; Spark re-obtains them before expiry only when it can log in again
   (`--principal/--keytab`, or `spark.kerberos.renewal.credentials=ccache`). `spark.security.credentials.flight.enabled=false`
   turns the provider off.
+- Spark creates its delegation token manager on YARN and Kubernetes only; on a standalone cluster nothing is
+  shipped and executors need their own Kerberos login.
 
 ## License
 
