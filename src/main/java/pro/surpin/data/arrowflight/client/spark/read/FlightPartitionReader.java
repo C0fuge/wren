@@ -2,6 +2,7 @@ package pro.surpin.data.arrowflight.client.spark.read;
 
 import pro.surpin.data.arrowflight.client.Client;
 import pro.surpin.data.arrowflight.client.Configuration;
+import pro.surpin.data.arrowflight.client.spark.security.FlightSessionTokens;
 import pro.surpin.data.arrowflight.client.model.Field;
 import pro.surpin.data.arrowflight.client.model.FieldType;
 import pro.surpin.data.arrowflight.client.read.EndpointReader;
@@ -61,7 +62,7 @@ public class FlightPartitionReader implements PartitionReader<InternalRow> {
      * @param inputPartition - the input partition to read
      */
     public FlightPartitionReader(Configuration configuration, InputPartition inputPartition) {
-        this(Client.getOrCreate(configuration), configuration, inputPartition);
+        this(FlightSessionTokens.connect(configuration), configuration, inputPartition);
     }
 
     /**

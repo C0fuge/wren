@@ -27,6 +27,32 @@ scripts/install-kestrel.sh          # builds and installs the server artifacts a
 The jar to put on Spark's class path is `target/arrow-flight-spark-connector-<version>-shaded.jar` (Jackson
 relocated; Spark itself is `provided`).
 
+## Kerberos on YARN
+
+With `kerberos.servicePrincipal` (TLS required) every process authenticates with SPNEGO, so executors would need
+their own TGT. Instead, the driver can obtain a server session and ship it in the job credentials: the connector
+registers a Spark delegation token provider (service `flight`) that, when configured, authenticates to each listed
+server with the driver's Kerberos login and stores the signed session the server returns. Executors use that
+session instead of SPNEGO; without one they fall back to SPNEGO with their own login (and fail with an error
+naming what is missing).
+
+```sh
+spark-submit --principal user@REALM --keytab user.keytab \
+  --conf spark.flight.kerberos.servers=flight-host:32010 \
+  --conf spark.flight.kerberos.servicePrincipal=flight/flight-host@REALM \
+  --conf spark.flight.kerberos.tls.truststore.jksFile=/path/truststore.jks \
+  --conf spark.flight.kerberos.tls.truststore.pass=... \
+  ...
+```
+
+- `spark.flight.kerberos.servers`: comma-separated `host:port`, the host exactly as in the read/write `host`
+  option (sessions are matched by host and port).
+- `spark.flight.kerberos.servicePrincipal`, `spark.flight.kerberos.tls.verifyServer` (default `true`),
+  `spark.flight.kerberos.tls.truststore.jksFile` / `.pass`: as the read/write options of the same name.
+- Server sessions last ten minutes; Spark re-obtains them before expiry only when it can log in again
+  (`--principal/--keytab`, or `spark.kerberos.renewal.credentials=ccache`). `spark.security.credentials.flight.enabled=false`
+  turns the provider off.
+
 ## License
 
 Apache License 2.0 (see `LICENSE`).

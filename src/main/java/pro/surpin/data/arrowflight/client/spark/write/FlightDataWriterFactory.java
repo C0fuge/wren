@@ -1,8 +1,8 @@
 package pro.surpin.data.arrowflight.client.spark.write;
 
-import pro.surpin.data.arrowflight.client.Client;
 import pro.surpin.data.arrowflight.client.write.WriteProtocol;
 import pro.surpin.data.arrowflight.client.Configuration;
+import pro.surpin.data.arrowflight.client.spark.security.FlightSessionTokens;
 import pro.surpin.data.arrowflight.client.model.Table;
 import pro.surpin.data.arrowflight.client.write.WriteBehavior;
 import pro.surpin.data.arrowflight.client.write.WriteStatement;
@@ -53,7 +53,7 @@ public final class FlightDataWriterFactory implements DataWriterFactory, Streami
      */
     private void truncate(String table) {
         try {
-            Client.getOrCreate(this.configuration).truncate(table);
+            FlightSessionTokens.connect(this.configuration).truncate(table);
         } catch (Exception e) {
             LoggerFactory.getLogger(this.getClass()).error(e.getMessage() + " --> " + Arrays.toString(e.getStackTrace()));
             throw new RuntimeException(e);

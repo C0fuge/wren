@@ -3,6 +3,7 @@ package pro.surpin.data.arrowflight.client.spark.write;
 import pro.surpin.data.arrowflight.client.model.ArrowConversion;
 import pro.surpin.data.arrowflight.client.Client;
 import pro.surpin.data.arrowflight.client.Configuration;
+import pro.surpin.data.arrowflight.client.spark.security.FlightSessionTokens;
 import pro.surpin.data.arrowflight.client.write.WriteProtocol;
 import pro.surpin.data.arrowflight.client.write.WriteStatement;
 import org.apache.arrow.flight.sql.FlightSqlClient;
@@ -90,7 +91,7 @@ public final class FlightDataWriter implements DataWriter<InternalRow> {
         this.batchSize = batchSize;
 
         this.dataSchema = dataSchema;
-        this.client = Client.getOrCreate(configuration);
+        this.client = FlightSessionTokens.connect(configuration);
         if (protocol == WriteProtocol.PREPARED_SQL) {
             this.preparedStmt = this.client.getPreparedStatement(this.stmt.getStatement());
             this.arrowSchema = this.preparedStmt.getParameterSchema();
