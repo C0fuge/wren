@@ -16,6 +16,10 @@
 
 ## Next steps (one per session; small and finished)
 
+> **Maintainer, 2026-10-28 15:00:** keep the connector native (Arrow batches straight into Spark's columnar
+> reader, no JDBC layer anywhere). In S5 add Spark's built-in JDBC data source with the Flight SQL JDBC driver as a
+> baseline so the native gain is measured.
+
 (S1 Kerberos on YARN executors: done 2026-10-28, see Log.)
 
 S2. **Build matrix.** Maven profiles for Spark 3.3 / 3.4 / 3.5 (Scala 2.12) and Spark 4.0 (Scala 2.13, JDK 17/21);
