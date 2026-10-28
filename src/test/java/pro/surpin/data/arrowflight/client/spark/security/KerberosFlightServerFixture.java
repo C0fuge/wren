@@ -1,6 +1,7 @@
 package pro.surpin.data.arrowflight.client.spark.security;
 
 import pro.surpin.data.arrowflight.server.KerberosTestAuthenticator;
+import org.apache.arrow.flight.FlightProducer;
 import org.apache.arrow.flight.FlightServer;
 import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.NoOpFlightProducer;
@@ -58,6 +59,17 @@ final class KerberosFlightServerFixture implements AutoCloseable {
      * @throws Exception on startup failure
      */
     KerberosFlightServerFixture(CallHeaderAuthenticator authenticator) throws Exception {
+        this(authenticator, new NoOpFlightProducer());
+    }
+
+    /**
+     * Starts the server on a free port with the given authenticator in front of a producer.
+     *
+     * @param authenticator Flight header authenticator
+     * @param producer Flight producer serving the calls
+     * @throws Exception on startup failure
+     */
+    KerberosFlightServerFixture(CallHeaderAuthenticator authenticator, FlightProducer producer) throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
         KeyPair keys = generator.generateKeyPair();
@@ -70,7 +82,7 @@ final class KerberosFlightServerFixture implements AutoCloseable {
         certificate = new JcaX509CertificateConverter().getCertificate(
                 builder.build(new JcaContentSignerBuilder("SHA256withRSA").build(keys.getPrivate())));
         byte[] key = pem("PRIVATE KEY", keys.getPrivate().getEncoded());
-        server = FlightServer.builder(allocator, Location.forGrpcTls("localhost", 0), new NoOpFlightProducer())
+        server = FlightServer.builder(allocator, Location.forGrpcTls("localhost", 0), producer)
                 .useTls(new ByteArrayInputStream(certificatePem()), new ByteArrayInputStream(key))
                 .headerAuthenticator(authenticator)
                 .build()

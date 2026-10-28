@@ -5,7 +5,6 @@ import pro.surpin.data.arrowflight.client.Configuration;
 import pro.surpin.data.arrowflight.server.KerberosTestAuthenticator;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.kerby.kerberos.kerb.server.SimpleKdcServer;
 import org.apache.spark.SparkConf;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -18,9 +17,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import scala.Option;
 
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.PrivilegedExceptionAction;
 import java.util.Base64;
@@ -34,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Real Kerberos end to end, without Spark's token manager: an in-process KDC (Apache Kerby), a TLS
+ * Real Kerberos end to end, without Spark's token manager: an in-process KDC ({@link KerberosKdcFixture}), a TLS
  * Flight server with the server's GSS acceptor on a {@code flight/localhost} keytab login, the
  * provider obtaining a session with SPNEGO under a client keytab login (the driver), and an
  * executor without any Kerberos login connecting with that session.
@@ -48,52 +45,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("integration")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class FlightKerberosKdcTest {
-    private static final String REALM = "EXAMPLE.COM";
-    private static final String CLIENT = "alice@" + REALM;
-    private static final String SERVICE = "flight/localhost@" + REALM;
+    private static final String CLIENT = KerberosKdcFixture.CLIENT;
+    private static final String SERVICE = KerberosKdcFixture.SERVICE;
     private static final byte[] SECRET = new byte[32];
 
     @TempDir
     static Path dir;
-    private static SimpleKdcServer kdc;
-    private static String previousKrb5Conf;
+    private static KerberosKdcFixture kdc;
     private static UserGroupInformation driver;
     private static KerberosFlightServerFixture server;
 
     @BeforeAll
     static void start() throws Exception {
-        int port;
-        try (ServerSocket socket = new ServerSocket(0)) {
-            port = socket.getLocalPort();
-        }
-        kdc = new SimpleKdcServer();
-        kdc.setWorkDir(Files.createDirectories(dir.resolve("kdc")).toFile());
-        kdc.setKdcHost("localhost");
-        kdc.setKdcRealm(REALM);
-        kdc.setAllowUdp(false);
-        kdc.setKdcTcpPort(port);
-        kdc.init();
-        kdc.start();
-        Path clientKeytab = dir.resolve("alice.keytab");
-        Path serviceKeytab = dir.resolve("flight.keytab");
-        kdc.createAndExportPrincipals(clientKeytab.toFile(), "alice");
-        kdc.createAndExportPrincipals(serviceKeytab.toFile(), "flight/localhost");
-        kdc.createPrincipal("other/localhost", "other-password");
-        Path krb5 = dir.resolve("krb5.conf");
-        Files.writeString(krb5, "[libdefaults]\n default_realm = " + REALM + "\n"
-                + " udp_preference_limit = 1\n dns_lookup_kdc = false\n dns_lookup_realm = false\n"
-                + " dns_canonicalize_hostname = false\n rdns = false\n"
-                + "[realms]\n " + REALM + " = {\n  kdc = localhost:" + port + "\n }\n");
-        previousKrb5Conf = System.setProperty("java.security.krb5.conf", krb5.toString());
-
-        org.apache.hadoop.conf.Configuration hadoop = new org.apache.hadoop.conf.Configuration(false);
-        hadoop.set("hadoop.security.authentication", "kerberos");
-        hadoop.set("hadoop.security.auth_to_local", "RULE:[1:$1] RULE:[2:$1] DEFAULT");
-        UserGroupInformation.setConfiguration(hadoop);
-        driver = UserGroupInformation.loginUserFromKeytabAndReturnUGI(CLIENT, clientKeytab.toString());
-        UserGroupInformation service = UserGroupInformation.loginUserFromKeytabAndReturnUGI(SERVICE,
-                serviceKeytab.toString());
-        server = new KerberosFlightServerFixture(KerberosTestAuthenticator.gss(service, SECRET));
+        kdc = new KerberosKdcFixture(dir);
+        driver = kdc.loginClient();
+        server = new KerberosFlightServerFixture(KerberosTestAuthenticator.gss(kdc.loginService(), SECRET));
     }
 
     @AfterAll
@@ -102,14 +68,7 @@ class FlightKerberosKdcTest {
             server.close();
         }
         if (kdc != null) {
-            kdc.stop();
-        }
-        UserGroupInformation.reset();
-        UserGroupInformation.setConfiguration(new org.apache.hadoop.conf.Configuration(false));
-        if (previousKrb5Conf == null) {
-            System.clearProperty("java.security.krb5.conf");
-        } else {
-            System.setProperty("java.security.krb5.conf", previousKrb5Conf);
+            kdc.close();
         }
     }
 
@@ -189,7 +148,7 @@ class FlightKerberosKdcTest {
     @Order(3)
     void ticketForAnotherServiceIsRejectedAndNothingIsShipped() throws Exception {
         Credentials creds = new Credentials();
-        SparkConf conf = conf("other/localhost@" + REALM);
+        SparkConf conf = conf(KerberosKdcFixture.OTHER_SERVICE);
         assertThrows(RuntimeException.class, () -> driver.doAs((PrivilegedExceptionAction<Option<Object>>) () ->
                 new FlightDelegationTokenProvider().obtainDelegationTokens(
                         new org.apache.hadoop.conf.Configuration(false), conf, creds)));

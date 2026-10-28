@@ -7,6 +7,7 @@ import pro.surpin.data.arrowflight.client.query.PushAggregation;
 import pro.surpin.data.arrowflight.client.query.TableScan;
 import pro.surpin.data.arrowflight.client.spark.SparkPushdown;
 import pro.surpin.data.arrowflight.client.spark.SparkTypes;
+import pro.surpin.data.arrowflight.client.spark.security.FlightSessionTokens;
 import pro.surpin.data.arrowflight.client.write.PartitionBehavior;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.spark.sql.connector.expressions.filter.Predicate;
@@ -184,23 +185,25 @@ public final class Table implements Serializable {
     }
 
     /**
-     * Initialize the schema and end-points by submitting the physical query
+     * Initialize the schema and end-points by submitting the physical query; with Kerberos, a
+     * Flight session shipped in the job credentials is used instead of SPNEGO.
      * @param config - the connection configuration
      */
     public void initialize(Configuration config) {
-        scan.initialize(config);
+        scan.initialize(FlightSessionTokens.resolve(config));
         this.sparkSchema = SparkTypes.toSpark(scan.getSchema());
     }
 
     /**
      * Initializes result schema without allocating endpoints or server handles.
      * Used during Spark catalog/table schema inference; the real scan is planned
-     * only after pushdown is known.
+     * only after pushdown is known. With Kerberos, a Flight session shipped in the job credentials
+     * is used instead of SPNEGO.
      *
      * @param config connection configuration
      */
     public void initializeSchema(Configuration config) {
-        scan.initializeSchema(config);
+        scan.initializeSchema(FlightSessionTokens.resolve(config));
         this.sparkSchema = SparkTypes.toSpark(scan.getSchema());
     }
 
