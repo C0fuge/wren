@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -123,6 +124,37 @@ class SparkTpchQ1PushdownIntegrationTest {
     @Test
     void persistedQ1PushesAggregatesAndMatchesDirectParquet() {
         assertQ1PushdownAndResults("persisted_flight_lineitem");
+    }
+
+    /**
+     * Without ANSI mode (Spark 3.5's default) Spark translates no {@code + - * /} into connector expressions, so
+     * Q1's arithmetic aggregates keep the whole aggregation in Spark (same results); aggregates of plain columns
+     * are still pushed. Documents why TPC-H Q1 runs in Spark unless {@code spark.sql.ansi.enabled=true}.
+     */
+    @Test
+    void nonAnsiPushesOnlyAggregatesWithoutArithmetic() {
+        spark.conf().set("spark.sql.ansi.enabled", "false");
+        try {
+            Dataset<Row> flightResult = q1("flight_lineitem");
+            String plan = flightResult.queryExecution().executedPlan().toString().toLowerCase();
+            assertFalse(plan.contains("group by"),
+                    "Spark is expected to keep Q1 without ANSI mode (arithmetic not translated):\n" + plan);
+            assertEquals(q1("direct_lineitem").collectAsList(), flightResult.collectAsList(),
+                    "Flight and direct Q1 results must match without ANSI mode");
+
+            String plain = """
+                    SELECT l_returnflag, l_linestatus, SUM(l_quantity) AS sum_qty, COUNT(*) AS count_order
+                    FROM %s GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus
+                    """;
+            Dataset<Row> pushed = spark.sql(plain.formatted("flight_lineitem"));
+            String pushedPlan = pushed.queryExecution().executedPlan().toString().toLowerCase();
+            assertTrue(pushedPlan.contains("group by") && pushedPlan.contains("sum("),
+                    "Aggregates of plain columns must be pushed without ANSI mode:\n" + pushedPlan);
+            assertEquals(spark.sql(plain.formatted("direct_lineitem")).collectAsList(), pushed.collectAsList(),
+                    "Flight and direct results must match");
+        } finally {
+            spark.conf().set("spark.sql.ansi.enabled", "true");
+        }
     }
 
     /**

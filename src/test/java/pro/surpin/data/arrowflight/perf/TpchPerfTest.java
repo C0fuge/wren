@@ -1,5 +1,7 @@
 package pro.surpin.data.arrowflight.perf;
 
+import pro.surpin.data.arrowflight.client.spark.FlightCatalog;
+
 import org.apache.spark.sql.DataFrameReader;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -35,8 +37,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Run with {@code scripts/perf/tpch.sh} (generates the data, starts the server, runs this class) or by hand:
  * {@code ./mvnw -Pperf test -Dtest=TpchPerfTest -Dperf.tpch.data=<dir with tpch/<table>/*.parquet>}. Settings
  * (system properties): {@code perf.flight.host} / {@code perf.flight.port} (127.0.0.1:32010), {@code perf.flight.user} / {@code
- * perf.flight.password} (perf), {@code perf.flight.schema} (tpch), {@code perf.modes} (parquet,flight,jdbc; parquet always runs first as the
- * reference), {@code perf.runs} (3 timed runs per query and mode), {@code perf.queries} (all, or e.g. 1,6,14),
+ * perf.flight.password} (perf), {@code perf.flight.schema} (tpch), {@code perf.modes} (parquet,flight,jdbc; also
+ * {@code catalog}: the tables of {@link FlightCatalog} instead of {@code format("flight")} views; parquet always
+ * runs first as the reference), {@code perf.ansi} ({@code spark.sql.ansi.enabled} for every mode; unset: Spark's
+ * default; Spark pushes aggregates over {@code + - * /} only in ANSI mode), {@code perf.runs} (3 timed runs per query and mode), {@code perf.queries} (all, or e.g. 1,6,14),
  * {@code perf.jdbc.partitions} (Spark JDBC partitions of the big tables, default the core count), {@code
  * perf.out} (target/perf).
  *
@@ -57,6 +61,10 @@ class TpchPerfTest {
     private static final BigDecimal ABSOLUTE_TOLERANCE = new BigDecimal("1e-6");
     private static final BigDecimal RELATIVE_TOLERANCE = new BigDecimal("1e-9");
     private static final String REFERENCE = "parquet";
+    /** Spark catalog name of the {@code catalog} mode. */
+    private static final String CATALOG = "flight";
+    private static final String CATALOG_CONF = "spark.sql.catalog." + CATALOG;
+    private static final String ANSI_CONF = "spark.sql.ansi.enabled";
 
     /**
      * Runs the selected TPC-H queries in every mode and writes the result files.
@@ -75,7 +83,7 @@ class TpchPerfTest {
         List<Integer> queries = queries(System.getProperty("perf.queries", "all"));
         int cores = Runtime.getRuntime().availableProcessors();
 
-        SparkSession spark = SparkSession.builder()
+        SparkSession.Builder builder = SparkSession.builder()
                 .appName("TpchPerfTest")
                 .master("local[*]")
                 .config("spark.sql.shuffle.partitions", String.valueOf(cores * 2))
@@ -83,7 +91,16 @@ class TpchPerfTest {
                 // Advertise the address bound: Spark 4 executors fetch session classes from the driver.
                 .config("spark.driver.host", "127.0.0.1")
                 .config("spark.ui.enabled", "false")
-                .getOrCreate();
+                .config(CATALOG_CONF, FlightCatalog.class.getName())
+                .config(CATALOG_CONF + ".host", host())
+                .config(CATALOG_CONF + ".port", port())
+                .config(CATALOG_CONF + ".user", user())
+                .config(CATALOG_CONF + ".password", password());
+        String ansi = System.getProperty("perf.ansi", "");
+        if (!ansi.isBlank()) {
+            builder.config(ANSI_CONF, ansi.trim());
+        }
+        SparkSession spark = builder.getOrCreate();
         spark.sparkContext().setLogLevel("WARN");
 
         StringBuilder csv = new StringBuilder("mode,query,run,millis,rows\n");
@@ -148,6 +165,7 @@ class TpchPerfTest {
                     "data=" + tpch,
                     "flight=" + host() + ":" + port() + " schema=" + schema(),
                     "modes=" + modes,
+                    "ansi=" + spark.conf().get(ANSI_CONF),
                     "runs=" + runs,
                     "wallSeconds=" + (System.nanoTime() - started) / 1_000_000_000L,
                     ""));
@@ -160,7 +178,7 @@ class TpchPerfTest {
      * Registers the TPC-H tables as temporary views read through the given mode.
      *
      * @param spark Spark session
-     * @param mode parquet, flight or jdbc
+     * @param mode parquet, flight, catalog or jdbc
      * @param tpch directory holding one Parquet directory per table
      */
     private static void register(SparkSession spark, String mode, Path tpch) {
@@ -174,6 +192,7 @@ class TpchPerfTest {
                         .option("password", password())
                         .option("table", schema() + "." + table)
                         .load();
+                case "catalog" -> spark.table(CATALOG + "." + schema() + "." + table);
                 case "jdbc" -> jdbc(spark, table);
                 default -> throw new IllegalArgumentException("unknown mode " + mode);
             };

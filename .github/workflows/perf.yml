@@ -16,13 +16,17 @@ on:
         type: string
         default: "3"
       modes:
-        description: "Modes besides the parquet reference (parquet,flight,jdbc)"
+        description: "Modes besides the parquet reference (parquet,flight,catalog,jdbc)"
         type: string
         default: "parquet,flight,jdbc"
       queries:
         description: "all, or query numbers (1,6,14)"
         type: string
         default: "all"
+      ansi:
+        description: "spark.sql.ansi.enabled for every mode (true/false; empty: Spark's default)"
+        type: string
+        default: ""
       kestrel_ref:
         description: "Server repository commit/branch (default: kestrel.ref)"
         type: string
@@ -67,6 +71,7 @@ jobs:
           RUNS: ${{ inputs.runs }}
           MODES: ${{ inputs.modes }}
           QUERIES: ${{ inputs.queries }}
+          ANSI: ${{ inputs.ansi }}
           OUT: ${{ github.workspace }}/target/perf
           TEST_JVM_OPTIONS: -Xmx8g
         run: |

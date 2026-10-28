@@ -8,6 +8,7 @@
 #
 #   scripts/install-kestrel.sh && scripts/perf/tpch.sh
 #   SF=1 RUNS=3 MODES=parquet,flight,jdbc QUERIES=all MVN=mvn scripts/perf/tpch.sh
+#   MODES=flight,catalog ANSI=true QUERIES=1 scripts/perf/tpch.sh   # catalog tables; spark.sql.ansi.enabled
 #
 # Needs JDK 21, python3 with pip (tpchgen-cli), and scripts/install-kestrel.sh run before (its checkout in
 # .kestrel). Extra test JVM options for Spark: TEST_JVM_OPTIONS (e.g. -Xmx8g).
@@ -18,6 +19,7 @@ sf="${SF:-1}"
 runs="${RUNS:-3}"
 modes="${MODES:-parquet,flight,jdbc}"
 queries="${QUERIES:-all}"
+ansi="${ANSI:-}"
 port="${PORT:-32010}"
 mvn="${MVN:-$root/mvnw}"
 kestrel="${KESTREL_DIR:-$root/.kestrel}"
@@ -62,4 +64,4 @@ grep -q "Server Arrow Flight SQL started" "$out/server.log" || { echo "server st
 cd "$root"
 "$mvn" --batch-mode --no-transfer-progress -Pperf test -Dtest=TpchPerfTest -Dsurefire.failIfNoSpecifiedTests=false \
   -Dperf.tpch.data="$data" -Dperf.flight.port="$port" -Dperf.runs="$runs" -Dperf.modes="$modes" \
-  -Dperf.queries="$queries" -Dperf.out="$out" -Dperf.sf="$sf" ${TEST_JVM_OPTIONS:+"-DargLine=$TEST_JVM_OPTIONS"}
+  -Dperf.queries="$queries" -Dperf.out="$out" -Dperf.sf="$sf" -Dperf.ansi="$ansi" ${TEST_JVM_OPTIONS:+"-DargLine=$TEST_JVM_OPTIONS"}

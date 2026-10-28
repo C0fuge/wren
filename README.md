@@ -12,6 +12,12 @@ spark.read.format("flight")
   .load()
 ```
 
+Aggregate pushdown is all or nothing per query block, and Spark translates arithmetic (`+ - * /`) into connector
+expressions only with `spark.sql.ansi.enabled=true` (Spark 4's default; Spark 3.5 defaults to `false`). Without
+ANSI mode an aggregate such as `SUM(l_extendedprice * (1 - l_discount))` therefore keeps the whole aggregation in
+Spark (results are the same; TPC-H Q1 at SF1 is ~6x slower than with ANSI mode). Aggregates of plain columns are
+pushed either way.
+
 Status: Spark 3.5 (Scala 2.12, default) and Spark 4.0 (Scala 2.13), JDK 21. Backlog and decisions:
 `docs/STATUS.md`.
 
@@ -136,9 +142,10 @@ spark-submit --principal user@REALM --keytab user.keytab \
 factor `SF`, default 1), starts the server (built at `kestrel.ref`) on it as a separate process, and runs the 22
 queries in Spark local mode (`TpchPerfTest`, `-Pperf`) three ways: Spark reading the Parquet files directly (the
 reference), the connector (`format("flight")`), and Spark's JDBC data source with the Flight SQL JDBC driver
-(baseline; big tables split into key ranges). Every mode's rows are compared with the reference. Results in
+(baseline; big tables split into key ranges); mode `catalog` reads the connector through `FlightCatalog`
+instead, and `ANSI=true|false` sets `spark.sql.ansi.enabled` for every mode (see above). Every mode's rows are compared with the reference. Results in
 `target/perf`: `times.csv` (every run), `summary.md` (medians, totals, ratios), `plans/` (executed plans),
-`env.txt`, `server.log`. In GitHub Actions: workflow `Perf` (manual, inputs `sf`, `runs`, `modes`, `queries`),
+`env.txt`, `server.log`. In GitHub Actions: workflow `Perf` (manual, inputs `sf`, `runs`, `modes`, `queries`, `ansi`),
 results kept as an artifact.
 
 ## License
