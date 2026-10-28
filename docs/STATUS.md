@@ -22,14 +22,9 @@
 
 (S1 Kerberos on YARN executors: done 2026-10-28, see Log.)
 
-S2. **Build matrix.** Part 1 done 2026-10-28 (profiles `spark-3.3/3.4/3.5/4.0`, CI matrix; see Log). Next (part 2):
-    check the shaded jar against a Hadoop 3.1.3 client classpath: relocate Netty, protobuf, Guava (Jackson already
-    is) in the shade config, then a test (own tag or a separate surefire execution after `package`) that loads
-    `target/*-shaded.jar` in a fresh class loader next to Hadoop 3.1.3 client jars (resolved with
-    `maven-dependency-plugin:copy` into `target/`) and reads a table from the in-process server through it (no
-    `LinkageError` / `NoSuchMethodError`). Watch: relocating Netty needs the native epoll libs renamed
-    (`META-INF/native/libnetty_*` -> shaded prefix) or the NIO fallback; gRPC's service files need the
-    `ServicesResourceTransformer` (present). Then the shaded jar's name could carry the Scala/Spark line.
+(S2 Build matrix: done 2026-10-28, see Log. Possible follow-up, not scheduled: carry the Spark/Scala line in
+the shaded jar's name, e.g. `-spark3.5_2.12-shaded.jar`; changes the documented jar name.)
+
 S3. **Spark catalog.** A proper `TableCatalog` + `SupportsNamespaces` over the server's metadata (schemas, tables,
     columns), configured as `spark.sql.catalog.<name>=<class>` with options under that prefix; `SHOW NAMESPACES`,
     `SHOW TABLES`, `DESCRIBE`, `SELECT` through the catalog; tests in Spark local mode.
@@ -48,6 +43,8 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   a local cluster whose backend creates the manager as YARN does (`TokenManagingLocalClusterManager`).
 
 - Spark versions on the production cluster (pending from the maintainer) — decides the default profile in S2.
+  Also useful: whether Spark there is a "Hadoop free" build on the cluster's Hadoop 3.1.3 jars (what
+  `ShadedJarHadoop313IT` models) or Spark's own Hadoop 3.3 client; the shaded jar is meant to work with both.
 - For the server/client core (found 2026-10-28 by the S2 matrix): `arrow-flight-client-core` is Java 21 bytecode
   and uses Java 21 language features (pattern matching in `switch`: `Expr`, `SqlRenderer`), so the connector runs
   on JDK 21 only. Spark 3.3 and 3.4 cannot start on JDK 21 (`org.apache.spark.unsafe.Platform` looks up
@@ -107,3 +104,16 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   cast explicitly in the boolean = tinyint join (Spark 4 ANSI default). Local (system `mvn`): 3.5 and 4.0 each 192
   tests, 0 failures, Checkstyle 0, SpotBugs 0; 3.3/3.4 compile + checks. CI run 40706483617 green (4 jobs). Commits
   carry no `Co-Authored-By` trailer (CLAUDE.md: no trailer e-mail). Next: S2 part 2 (Hadoop 3.1.3 / shading).
+- 2026-10-28 (session): S2 done (part 2: shaded jar vs Hadoop 3.1.3). New `ShadedJarHadoop313IT` (failsafe, after
+  `package`; tag `shaded`): a separate JVM runs Spark of the build line "Hadoop free" plus the Hadoop 3.1.3 client
+  (class path resolved by a nested Maven run from `src/test/hadoop-3.1.3/pom.xml`: Guava 27, protobuf 2.5, Spark's
+  own Arrow 12 / Netty 4.1 / Jackson 2.15) with only the shaded jar added after it, and reads `test_table` from the
+  in-process server (full scan, pushed filter, pushed aggregate; source launcher runs `ShadedJarProbe.java`); a
+  second test checks the jar holds no unrelocated copy of the shared packages and that Netty's native libraries are
+  renamed. Found: the old jar (Jackson relocated only) hangs on its first read there — Spark's Arrow 12 wins over
+  the connector's Arrow 19 (`apply() or fail() already called` in the Flight credentials, then no answer). Fix:
+  relocate Arrow, FlatBuffers, Netty (+ `META-INF/native/libnetty_*` renamed: relocated epoll loads), gRPC,
+  perfmark, protobuf, Guava, Gson, Apache Commons; slf4j no longer bundled; dead multi-release Jackson entries
+  dropped. Passes on Spark 3.5.9 and 4.0.5 next to Hadoop 3.1.3. `scripts/install-kestrel.sh` takes `MVN=mvn`.
+  Local (system `mvn`, 3.5): 192 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0: the IT green. CI run CIRUN. Note: the lock commit of this session carries a
+  `Co-Authored-By` trailer by mistake (no rewrite of `main`); later commits have none. Next: S3 (Spark catalog).

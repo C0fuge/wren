@@ -6,6 +6,7 @@
 #
 #   scripts/install-kestrel.sh            # build at kestrel.ref
 #   KESTREL_REF=main scripts/install-kestrel.sh
+#   MVN=mvn scripts/install-kestrel.sh    # build with another Maven than the wrapper
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,5 +23,5 @@ git -C "$dir" checkout -q --force FETCH_HEAD
 echo "kestrel at $(git -C "$dir" rev-parse HEAD)"
 
 # -DskipTests still compiles and packages the test classes (the server test-jar is needed).
-(cd "$dir" && ./mvnw --batch-mode --no-transfer-progress -q \
+(cd "$dir" && ${MVN:-./mvnw} --batch-mode --no-transfer-progress -q \
   -pl flight-client-core,flight-server -am install -DskipTests)

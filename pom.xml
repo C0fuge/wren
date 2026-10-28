@@ -26,6 +26,14 @@
         <!-- Spark local-mode and in-process server tests run by default; perf and real-services
              only on request (-Pperf / -Preal-services). -->
         <excludedGroups>perf,real-services</excludedGroups>
+        <skipTests>false</skipTests>
+        <!-- JVM options of the test JVMs (surefire and failsafe). -->
+        <test.jvm.options>-ea --add-opens=java.base/java.nio=ALL-UNNAMED
+            --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+            --add-opens=java.base/java.lang=ALL-UNNAMED
+            --add-opens=java.base/java.util=ALL-UNNAMED
+            --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+            --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED</test.jvm.options>
         <checkstyle.failOnViolation>true</checkstyle.failOnViolation>
         <netty.version>4.2.19.Final</netty.version>
         <jackson.version>2.21.8</jackson.version>
@@ -204,12 +212,7 @@
                 <version>3.0.0</version>
                 <configuration>
                     <excludedGroups>${excludedGroups}</excludedGroups>
-                    <argLine>@{argLine} -ea --add-opens=java.base/java.nio=ALL-UNNAMED
-                        --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-                        --add-opens=java.base/java.lang=ALL-UNNAMED
-                        --add-opens=java.base/java.util=ALL-UNNAMED
-                        --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
-                        --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED</argLine>
+                    <argLine>@{argLine} ${test.jvm.options}</argLine>
                 </configuration>
             </plugin>
             <plugin>
@@ -226,12 +229,71 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
-                            <!-- Spark 3.5 puts its Jackson 2.15 first on the classpath: relocated, the
-                                 connector (Arrow, client core) runs on the version it was built with. -->
+                            <!-- Spark is provided and brings slf4j itself. -->
+                            <artifactSet><excludes><exclude>org.slf4j:*</exclude></excludes></artifactSet>
+                            <!-- Everything the connector bundles that Spark or the cluster's Hadoop also
+                                 ship is relocated, so the connector runs on the versions it was built
+                                 with whatever comes first on the class path: Spark 3.5 ships Jackson
+                                 2.15, Arrow 12 (with FlatBuffers 1.12), Netty 4.1, commons-lang3 3.12;
+                                 Hadoop 3.1.3 Guava 27, protobuf 2.5, Netty 4.1 / 3, Gson. With Spark's
+                                 Arrow 12 first, an unrelocated Arrow hangs the first read (found and
+                                 checked by ShadedJarHadoop313IT). -->
                             <relocations>
                                 <relocation>
                                     <pattern>com.fasterxml.jackson</pattern>
                                     <shadedPattern>pro.surpin.data.arrowflight.shaded.jackson</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.apache.arrow</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.arrow</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.google.flatbuffers</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.flatbuffers</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.netty</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.io.netty</shadedPattern>
+                                </relocation>
+                                <!-- Netty loads its native libraries (epoll, tcnative, ...) under the
+                                     relocated package's prefix: lib<prefix with _>_netty_*. -->
+                                <relocation>
+                                    <pattern>META-INF/native/libnetty_</pattern>
+                                    <shadedPattern>META-INF/native/libpro_surpin_data_arrowflight_shaded_netty_</shadedPattern>
+                                    <rawString>true</rawString>
+                                </relocation>
+                                <relocation>
+                                    <pattern>META-INF/native/netty_</pattern>
+                                    <shadedPattern>META-INF/native/pro_surpin_data_arrowflight_shaded_netty_</shadedPattern>
+                                    <rawString>true</rawString>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.grpc</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.io.grpc</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.perfmark</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.io.perfmark</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.google.protobuf</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.protobuf</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.google.common</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.guava</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.google.thirdparty</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.guava.thirdparty</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.google.gson</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.gson</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.apache.commons</pattern>
+                                    <shadedPattern>pro.surpin.data.arrowflight.shaded.commons</shadedPattern>
                                 </relocation>
                             </relocations>
                             <filters>
@@ -239,10 +301,55 @@
                                     <exclude>META-INF/*.SF</exclude>
                                     <exclude>META-INF/*.DSA</exclude>
                                     <exclude>META-INF/*.RSA</exclude>
+                                    <!-- Multi-release copies are not relocated by the shade plugin and
+                                         never loaded (the shaded jar is not Multi-Release). -->
+                                    <exclude>META-INF/versions/*/com/fasterxml/**</exclude>
                                 </excludes></filter>
                             </filters>
                         </configuration>
                     </execution>
+                </executions>
+            </plugin>
+            <!-- The shaded jar next to a Hadoop 3.1.3 client (ShadedJarHadoop313IT): resolve the
+                 class path of a "Hadoop free" Spark of this build line plus Hadoop 3.1.3 from
+                 src/test/hadoop-3.1.3/pom.xml (a nested Maven run: one artifact cannot have two
+                 versions in this pom), then run the *IT tests after package. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <id>hadoop-3.1.3-classpath</id>
+                        <phase>pre-integration-test</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <skip>${skipTests}</skip>
+                            <executable>${maven.home}/bin/mvn</executable>
+                            <arguments>
+                                <argument>--batch-mode</argument>
+                                <argument>--quiet</argument>
+                                <argument>--file=${project.basedir}/src/test/hadoop-3.1.3/pom.xml</argument>
+                                <argument>-Dmaven.repo.local=${settings.localRepository}</argument>
+                                <argument>-Dspark.version=${spark.version}</argument>
+                                <argument>-Dscala.binary.version=${scala.binary.version}</argument>
+                                <argument>-Dmdep.outputFile=${project.build.directory}/hadoop-3.1.3.classpath</argument>
+                                <argument>dependency:build-classpath</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.0.0</version>
+                <configuration>
+                    <excludedGroups>${excludedGroups}</excludedGroups>
+                    <argLine>@{argLine} ${test.jvm.options}</argLine>
+                </configuration>
+                <executions>
+                    <execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution>
                 </executions>
             </plugin>
             <plugin>

@@ -30,8 +30,12 @@ Spark build lines (profiles): `spark-3.5` (default), `spark-4.0`; `spark-3.3` an
 those Spark versions do not start on JDK 21, which the server's client core requires. Build the jar for the Spark
 line the cluster runs (Scala 2.12 and 2.13 jars are not interchangeable).
 
-The jar to put on Spark's class path is `target/arrow-flight-spark-connector-<version>-shaded.jar` (Jackson
-relocated; Spark itself is `provided`).
+The jar to put on Spark's class path is `target/arrow-flight-spark-connector-<version>-shaded.jar` (Spark and
+slf4j are `provided`). It relocates everything it bundles that Spark or Hadoop also ship (Arrow, FlatBuffers,
+Netty with its native libraries, gRPC, protobuf, Guava, Gson, Jackson, Apache Commons, under
+`pro.surpin.data.arrowflight.shaded`), so it works with `--jars` whatever comes first on the class path.
+`./mvnw verify` checks that (`ShadedJarHadoop313IT`): Spark of the build line plus a Hadoop 3.1.3 client
+(`src/test/hadoop-3.1.3/pom.xml`) with only the shaded jar added reads a table from the in-process server.
 
 ## Kerberos on YARN
 

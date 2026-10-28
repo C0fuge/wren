@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <!-- Not a module: the class path of a "Hadoop free" Spark next to a Hadoop 3.1.3 client (the
+         production cluster's Hadoop), without anything the connector brings. The main build
+         resolves it (pre-integration-test) into target/hadoop-3.1.3.classpath and
+         ShadedJarHadoop313IT runs Spark on it with only the shaded connector jar added.
+         spark.version / scala.binary.version are passed by the main build. -->
+    <groupId>pro.surpin.arrowflight.it</groupId>
+    <artifactId>spark-on-hadoop-3.1.3</artifactId>
+    <version>1</version>
+    <packaging>pom</packaging>
+    <properties>
+        <spark.version>3.5.9</spark.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <hadoop.version>3.1.3</hadoop.version>
+    </properties>
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <!-- Spark's own (shaded) Hadoop 3.3 client is replaced by the cluster's 3.1.3 jars. -->
+            <exclusions>
+                <exclusion><groupId>org.apache.hadoop</groupId><artifactId>*</artifactId></exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client</artifactId>
+            <version>${hadoop.version}</version>
+        </dependency>
+    </dependencies>
+</project>
