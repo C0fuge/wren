@@ -25,9 +25,9 @@
 (S2 Build matrix: done 2026-10-28, see Log. Possible follow-up, not scheduled: carry the Spark/Scala line in
 the shaded jar's name, e.g. `-spark3.5_2.12-shaded.jar`; changes the documented jar name.)
 
-S3. **Spark catalog.** A proper `TableCatalog` + `SupportsNamespaces` over the server's metadata (schemas, tables,
-    columns), configured as `spark.sql.catalog.<name>=<class>` with options under that prefix; `SHOW NAMESPACES`,
-    `SHOW TABLES`, `DESCRIBE`, `SELECT` through the catalog; tests in Spark local mode.
+(S3 Spark catalog: done 2026-10-28, see Log. Possible follow-ups, not scheduled: case-insensitive name
+matching, `CREATE TABLE ... AS SELECT` through the catalog, column comments / table statistics in `DESCRIBE`.)
+
 S4. **Upstream ideas.** Look at upstream github.com/VadimSurpin/arrow-flight-server branch
     `feat/starrocks-native-integration`, Spark side: runtime / bloom filters, AQE guard, post-pushdown statistics
     (part of the statistics is already here). Port clear wins with tests; anything that changes the server ticket
@@ -117,3 +117,14 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   dropped. Passes on Spark 3.5.9 and 4.0.5 next to Hadoop 3.1.3. `scripts/install-kestrel.sh` takes `MVN=mvn`.
   Local (system `mvn`, 3.5): 192 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0: the IT green. CI run 40719166518 green (4 jobs; the IT ran on 3.5 and 4.0). Note: the lock commit of this session carries a
   `Co-Authored-By` trailer by mistake (no rewrite of `main`); later commits have none. Next: S3 (Spark catalog).
+- 2026-10-28 (session): S3 done (Spark catalog). `FlightCatalog` (`TableCatalog` + `SupportsNamespaces`,
+  `spark.sql.catalog.<name>=pro.surpin.data.arrowflight.client.spark.FlightCatalog`, options under that prefix):
+  server schemas are one-level namespaces (`GetDbSchemas`), tables come from `GetTables` with the Arrow schema
+  (no query), `loadTable` returns the connector's `FlightTable` (same pushdown/columnar reads); the other catalog
+  options are scan defaults (`FlightTable(config, table, scanDefaults)`, scan options win); `default.schema` is
+  the default namespace; names exact (the server's LIKE `_` wildcard is filtered out client-side), non-plain names
+  double-quoted in the FROM clause; DDL rejected (read-only). `FlightSource.configuration(options)` extracted.
+  README "Spark catalog". 17 new tests (`FlightCatalogTest` unit, `SparkFlightCatalogTest` Spark local mode:
+  `SHOW NAMESPACES`/`SHOW TABLES`/`DESCRIBE`/`SELECT` with pushdown, same rows as `format("flight")`, `USE`,
+  missing names, DDL). Local (system `mvn`): 3.5 208 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0 (USE test
+  added after: green on 3.5 and 4.0); 3.3 compiles. CI run 40725071252 green (4 jobs). Next: S4 (upstream ideas).
