@@ -9,7 +9,7 @@
   `arrow-flight-server` (+ test-jar) at the commit in `kestrel.ref`; then `./mvnw verify`. The parent's properties
   (Arrow 19.0.0, Spark 3.5.9, JUnit, Java 21) are vendored in `pom.xml`. CI: `.github/workflows/ci.yml`.
 - Tests at the split: unit + Spark local mode + in-process server (`TestFlightServerHelper` from the server
-  test-jar); about 175 in kestrel's CI.
+  test-jar); 175 tests, all green in CI at the split.
 - Server builds for end-to-end/perf work: kestrel pre-releases `server-<version>-<sha>` (linux jar, `libs` set,
   plugins dir, `START-NOTES.md` = how to start it).
 - Production target (maintainer): Hadoop 3.1.3 HA with ZooKeeper failover, Kerberos, Ranger; Spark on YARN.
@@ -45,4 +45,6 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
 
 - 2026-10-28 (maintainer): repo created from kestrel flight-spark (subtree split at kestrel b7cc47a600df, split head
   cd64bb2ed512; commit identities normalised to C0fuge). Standalone pom (parent properties vendored),
-  `scripts/install-kestrel.sh` + `kestrel.ref` for the server artifacts, `ci.yml`.
+  `scripts/install-kestrel.sh` + `kestrel.ref` for the server artifacts, `ci.yml`; the integration tests' two small
+  Parquet sets (`test_db`, `lineitem_tiny`) copied from the server module into `src/test/resources`. CI run
+  40669479250 green: 175 tests, 0 failures, Checkstyle 0, SpotBugs 0 (kestrel install ~1 min, build+tests ~4.5 min).
