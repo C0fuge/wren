@@ -41,9 +41,18 @@ S4. **Upstream ideas.** Upstream github.com/VadimSurpin/arrow-flight-server bran
         (Open questions).
     Not portable without server changes (Open questions): runtime bloom filters in the ticket, complete
     aggregation push-down (`supportCompletePushDown`).
-S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-release jar from its releases) vs Spark
-    reading the same Parquet directly; report per-query times and totals in the Log (record all metrics and raw
-    files as CI artifacts so runs never need repeating).
+S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading the same Parquet directly, with
+    Spark's JDBC data source + Flight SQL JDBC driver as baseline (maintainer, 15:00). Part 1 done (harness, see
+    Log): `scripts/perf/tpch.sh`, `TpchPerfTest` (-Pperf), workflow `Perf` (manual; all files as artifact). Next:
+    (a) Q1/Q5/Q13/Q7 are slower through the connector than direct (CI SF1: 2.2x / 1.8x / 1.5x / 1.3x): Q1's
+        plan shows Spark aggregating itself over a `BatchScan` (no aggregate push-down via temp views of
+        `format("flight")`; `SparkTpchQ1PushdownIntegrationTest` pushes it via `FlightSessionCatalog`). Add a
+        `catalog` mode (`FlightCatalog`, `flight.tpch.*` names) and find out why the view path does not push
+        (compare `plans/flight/q01.txt` in the artifact; the scan's SQL is in the `BatchScan` line);
+    (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
+        comparison (numbers compared by value) but worth one line in the report;
+    (c) optionally SF10 (`sf` input; runner disk/heap permitting) and a run with `partition.size`/result-mode
+        variations.
 
 ## Open questions
 
@@ -177,3 +186,22 @@ S5. **Perf.** TPC-H SF1 via Spark against a server container (kestrel pre-releas
   offered nothing by default; results equal to unpruned), `FlightScanTest` (+4), `FlightScanBuilderTest` (+1),
   `FlightAqeGuardTest`. Local (system `mvn`): 3.5 230 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; 4.0 the
   new tests green; 3.3 compiles. CI run 40745229990 green (4 jobs). Next: S5 (perf).
+- 2026-10-28 (session): S5 part 1 — TPC-H harness. `TpchPerfTest` (tag `perf`; `-Pperf`, which now skips the
+  JaCoCo agent — it instrumented Spark, Q1 took ~3 min — and adds the Flight SQL JDBC driver 19.0.0 for the
+  perf runs only) runs the 22 queries (`src/test/resources/tpch-queries`, validation parameters, checked against
+  DuckDB's known SF1 answers) in Spark local mode in three modes: Parquet direct (reference), `format("flight")`,
+  Spark JDBC + Flight SQL JDBC driver (big tables split by key into core-count ranges); every mode's rows are
+  compared with the reference (numbers by value; 1e-6 for Spark's scale-6 `avg`, relative 1e-9 only with
+  doubles; exact decimal sums must match) and a mismatch fails the run. Outputs `times.csv`, `summary.md`,
+  `plans/<mode>/qNN.txt`, `env.txt`, `errors.txt`. `scripts/perf/tpch.sh`: data via `tpchgen-cli` 4.0.0 (pip;
+  DuckDB's tpch extension is not downloadable from the session), server jar + libs built at `kestrel.ref`
+  (`-Plinux-only`, as its release) and started as its own JVM (insecure, local; needs `--add-opens
+  java.base/java.nio` or every DoGet fails with `DirectByteBuffer.<init>(long, int) not available`). Workflow
+  `Perf` (manual; inputs sf/runs/modes/queries/kestrel_ref; artifact `tpch-sf<sf>-<run id>`, 90 days).
+  `TpchPerfHelpersTest` (6 unit tests). Local (system `mvn`): 236 tests + 2 IT, 0 failures, Checkstyle 0,
+  SpotBugs 0; local SF1 all 22 x 3 modes equal. CI run 40766073856 green (4 jobs). Perf run 40766081647 (SF1,
+  3 runs, 4-core runner, server and Spark on one host; sum of medians): Parquet 20.1 s, connector 22.9 s (1.14x),
+  JDBC 45.7 s (2.28x; connector 2.0x faster than JDBC); all rows equal. Connector faster than direct on Q2, Q6,
+  Q14, Q17, Q19 (0.48-0.59x: filters/joins pushed to DuckDB), slower on Q1 2.16x, Q5 1.80x, Q13 1.50x, Q7 1.31x.
+  This session's lock commit again carries a `Co-Authored-By` trailer by mistake (no rewrite of `main`). Next:
+  S5 (a).
