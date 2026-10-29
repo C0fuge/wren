@@ -8,6 +8,7 @@ import org.apache.spark.sql.DataFrameReader;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.StructField;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -120,11 +121,13 @@ class TpchPerfTest {
         StringBuilder errors = new StringBuilder();
         Map<String, Map<String, long[]>> times = new LinkedHashMap<>();
         Map<String, List<List<Object>>> reference = new LinkedHashMap<>();
+        Map<String, Map<String, String>> columnTypes = new LinkedHashMap<>();
         long started = System.nanoTime();
         try {
             for (String mode : modes) {
                 try {
                     register(spark, mode, tpch);
+                    columnTypes.put(mode, columnTypes(spark));
                 } catch (RuntimeException e) {
                     errors.append(String.format(Locale.ROOT, "%s: tables not registered: %s%n", mode, e));
                     continue;
@@ -170,7 +173,8 @@ class TpchPerfTest {
         } finally {
             Files.writeString(out.resolve("times.csv"), csv);
             Files.writeString(out.resolve("errors.txt"), errors);
-            Files.writeString(out.resolve("summary.md"), summary(times, queries, runs));
+            Files.writeString(out.resolve("summary.md"), summary(times, queries, runs)
+                    + typeDifferences(columnTypes));
             Files.writeString(out.resolve("env.txt"), String.join("\n",
                     "date=" + Instant.now(),
                     "spark=" + spark.version(),
@@ -411,6 +415,53 @@ class TpchPerfTest {
             }
         }
         return md.append("\n\nTotals add the medians of the queries that ran in that mode.\n").toString();
+    }
+
+    /**
+     * Column types of the registered TPC-H views.
+     *
+     * @param spark Spark session with the views registered
+     * @return Spark SQL type per {@code table.column}, in table and column order
+     */
+    private static Map<String, String> columnTypes(SparkSession spark) {
+        Map<String, String> types = new LinkedHashMap<>();
+        for (String table : TABLES) {
+            for (StructField field : spark.table(table).schema().fields()) {
+                types.put(table + "." + field.name(), field.dataType().simpleString());
+            }
+        }
+        return types;
+    }
+
+    /**
+     * Markdown notes on columns a mode types differently from the reference (e.g. the JDBC baseline reads
+     * {@code bigint} keys as {@code decimal(20,0)}), grouped by type change; rows are compared by value, so such
+     * differences do not fail the comparison, but they change what Spark computes on.
+     *
+     * @param types column types per mode ({@link #columnTypes}); a mode without entries is skipped
+     * @return notes, empty when no mode differs from the reference or the reference did not run
+     */
+    static String typeDifferences(Map<String, Map<String, String>> types) {
+        Map<String, String> ref = types.get(REFERENCE);
+        if (ref == null) {
+            return "";
+        }
+        StringBuilder md = new StringBuilder();
+        for (Map.Entry<String, Map<String, String>> mode : types.entrySet()) {
+            Map<String, List<String>> changes = new LinkedHashMap<>();
+            ref.forEach((column, type) -> {
+                String other = mode.getValue().getOrDefault(column, "missing");
+                if (!other.equals(type)) {
+                    changes.computeIfAbsent(type + " -> " + other, k -> new ArrayList<>()).add(column);
+                }
+            });
+            mode.getValue().keySet().stream().filter(c -> !ref.containsKey(c))
+                    .forEach(c -> changes.computeIfAbsent("extra", k -> new ArrayList<>()).add(c));
+            changes.forEach((change, columns) -> md.append(String.format(Locale.ROOT, "- %s: %s (%d): %s%n",
+                    mode.getKey(), change, columns.size(), String.join(", ", columns))));
+        }
+        return md.isEmpty() ? ""
+                : "\nColumn types differing from " + REFERENCE + " (rows are compared by value):\n\n" + md;
     }
 
     /**

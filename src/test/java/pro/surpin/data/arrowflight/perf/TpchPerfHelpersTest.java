@@ -118,6 +118,30 @@ class TpchPerfHelpersTest {
         assertTrue(md.contains("| total | 250 | 100 | 0.40 |"), md);
     }
 
+    /** Type notes: per mode and type change, missing and extra columns; nothing when all match. */
+    @Test
+    void typeDifferenceNotes() {
+        Map<String, Map<String, String>> types = new LinkedHashMap<>();
+        types.put("parquet", Map.of("orders.o_orderkey", "bigint"));
+        types.put("flight", Map.of("orders.o_orderkey", "bigint"));
+        assertEquals("", TpchPerfTest.typeDifferences(types));
+        types.put("parquet", new LinkedHashMap<>());
+        types.get("parquet").put("lineitem.l_orderkey", "bigint");
+        types.get("parquet").put("orders.o_orderkey", "bigint");
+        types.get("parquet").put("orders.o_comment", "string");
+        types.put("jdbc", new LinkedHashMap<>());
+        types.get("jdbc").put("lineitem.l_orderkey", "decimal(20,0)");
+        types.get("jdbc").put("orders.o_orderkey", "decimal(20,0)");
+        types.get("jdbc").put("orders.o_x", "int");
+        String md = TpchPerfTest.typeDifferences(types);
+        assertTrue(md.startsWith("\nColumn types differing from parquet"), md);
+        assertTrue(md.contains("- jdbc: bigint -> decimal(20,0) (2): lineitem.l_orderkey, orders.o_orderkey\n"), md);
+        assertTrue(md.contains("- jdbc: string -> missing (1): orders.o_comment\n"), md);
+        assertTrue(md.contains("- jdbc: extra (1): orders.o_x\n"), md);
+        assertTrue(md.contains("- flight: bigint -> missing (1): lineitem.l_orderkey\n"), md);
+        assertEquals("", TpchPerfTest.typeDifferences(Map.of("jdbc", Map.of("a.b", "int"))));
+    }
+
     /** Stage task counts are listed in stage order. */
     @Test
     void stageTaskLine() {

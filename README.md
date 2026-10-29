@@ -198,7 +198,9 @@ reference), the connector (`format("flight")`), and Spark's JDBC data source wit
 instead, and `ANSI=true|false` sets `spark.sql.ansi.enabled` for every mode (see above). `QUERIES=probes` (or e.g. `p1,5`) runs probe scans
 instead of / besides TPC-H queries: the bare `lineitem` stream (`p01`: Q5's four columns, `p02`: the same shuffled by
 `l_orderkey`, `p03`: all columns; `src/test/resources/tpch-queries/pNN.sql`). Every mode's rows are compared with the reference. Results in
-`target/perf`: `times.csv` (every run), `summary.md` (medians, totals, ratios), `plans/` (executed plans),
+`target/perf`: `times.csv` (every run), `summary.md` (medians, totals, ratios; then the columns a mode types
+differently from the reference, e.g. the JDBC baseline reads `bigint` keys as `decimal(20,0)` from the driver's
+metadata — values compare equal, but Spark computes on decimals there), `plans/` (executed plans),
 `env.txt`, `server.log`. In GitHub Actions: workflow `Perf` (manual, inputs `sf`, `runs`, `modes`, `queries`, `ansi`),
 results kept as an artifact.
 
