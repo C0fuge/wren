@@ -154,7 +154,10 @@ class SparkRuntimeFilterTest {
         // A filtered non-Flight side: Spark sees its filter in any case, so only the setting decides.
         java.util.function.Supplier<Result> join = () -> {
             Dataset<Row> keys = spark.range(0, 1000).where("id % 97 = 5").selectExpr("CAST(id AS INT) AS sid");
-            Dataset<Row> big = table().selectExpr("id", "string_col");
+            // Whole-file bytes: with the narrower two-column estimate the test table is too small for Spark to
+            // expect a benefit from pruning it with the range's keys.
+            Dataset<Row> big = source().option("table", "test_schema.test_table")
+                    .option("statistics.columnWidth", "false").load().selectExpr("id", "string_col");
             Dataset<Row> joined = big.join(keys, big.col("id").equalTo(keys.col("sid"))).select("id").orderBy("id");
             List<Row> rows = joined.collectAsList();
             String plan = joined.queryExecution().executedPlan().toString();
