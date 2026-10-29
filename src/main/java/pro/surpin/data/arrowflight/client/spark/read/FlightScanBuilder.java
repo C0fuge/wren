@@ -305,11 +305,28 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
         // Off by default: with retainPushedFilters=false the scan offers nothing to Spark's dynamic pruning either.
         // The replanner also takes the conditions added after Spark's push-down (FlightLikePushdown).
         boolean runtimeFiltering = !"false".equalsIgnoreCase(sparkSetting(RETAIN_PUSHED_FILTERS, "false").trim());
-        FlightScan.Replanner replanner = aggregation != null ? null : extra -> {
-            List<String> all = new ArrayList<>(whereParts);
-            extra.forEach(condition -> all.add("(" + condition + ")"));
-            scanTable.probe(String.join(" and ", all), columns, null, behavior);
-            scanTable.initialize(config);
+        FlightScan.Replanner replanner = aggregation != null ? null : new FlightScan.Replanner() {
+            @Override
+            public void replan(List<String> extra) {
+                replan(extra, null);
+            }
+
+            @Override
+            public boolean replan(List<String> extra, List<String> names) {
+                StructField[] read = columns;
+                if (names != null) {
+                    // Only a subset of the pushed columns, in their order; with no pushed columns nothing is pruned.
+                    read = Arrays.stream(columns).filter(f -> names.contains(f.name())).toArray(StructField[]::new);
+                    if (columns.length == 0 || read.length != names.size()) {
+                        return false;
+                    }
+                }
+                List<String> all = new ArrayList<>(whereParts);
+                extra.forEach(condition -> all.add("(" + condition + ")"));
+                scanTable.probe(String.join(" and ", all), read, null, behavior);
+                scanTable.initialize(config);
+                return true;
+            }
         };
         return new FlightScan(this.configuration, this.table, replanner, this.retained, aggregation != null,
                 runtimeFiltering);

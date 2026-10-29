@@ -36,7 +36,7 @@ import java.util.OptionalLong;
  *
  * <p>Conditions Spark cannot translate into connector predicates but the server evaluates exactly (multi-wildcard
  * {@code LIKE} patterns, see {@code FlightLikePushdown}) are added after Spark's push-down with
- * {@link #pushConditions(List)}; Spark keeps evaluating them as well.
+ * {@link #pushConditions(List, List)}, which may also drop the columns only those conditions needed.
  */
 public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFiltering, Serializable {
     private static final Logger LOGGER = LoggerFactory.getLogger(FlightScan.class);
@@ -64,6 +64,8 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
     private List<String> runtimeConditions = List.of();
     // WHERE conditions added after Spark's push-down (pushConditions), kept when runtime filters re-plan the scan.
     private List<String> pushedConditions = List.of();
+    // Columns read after pushConditions pruned them; null while the pushed columns apply.
+    private List<String> columns;
 
     /** Plans the scan again on the Flight server with extra filter conditions. */
     @FunctionalInterface
@@ -74,6 +76,21 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
          * @param extraConditions rendered WHERE conditions
          */
         void replan(List<String> extraConditions);
+
+        /**
+         * Applies the conditions on top of the filters the scan already carries and reads only some of its columns.
+         *
+         * @param extraConditions rendered WHERE conditions
+         * @param columns names of the columns to read, in order; null keeps the pushed columns
+         * @return false when this replanner cannot change the columns (nothing was planned then)
+         */
+        default boolean replan(List<String> extraConditions, List<String> columns) {
+            if (columns != null) {
+                return false;
+            }
+            replan(extraConditions);
+            return true;
+        }
     }
 
     /**
@@ -185,14 +202,17 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
     }
 
     /**
-     * Adds WHERE conditions the server evaluates exactly and plans the scan again with them. The caller keeps
-     * evaluating the conditions in Spark, so the scan's rows stay correct whichever plan reads them. Conditions the
-     * scan already carries are skipped; an aggregated scan cannot take conditions.
+     * Adds WHERE conditions the server evaluates exactly and plans the scan again with them, optionally reading
+     * fewer columns. The server then applies the conditions to every row it returns, so the caller may drop them
+     * from Spark's plan (and the columns only they used). Conditions the scan already carries are skipped; an
+     * aggregated scan cannot take conditions. Nothing changes when the scan cannot be planned again as asked.
      *
      * @param conditions rendered WHERE conditions over the scan's columns
-     * @return true when the scan was planned again
+     * @param keptColumns names of the columns to read afterwards, in the order of {@link #readSchema()}; null keeps
+     *        the current columns
+     * @return true when the scan was planned again with all of the conditions (and the columns)
      */
-    public synchronized boolean pushConditions(List<String> conditions) {
+    public synchronized boolean pushConditions(List<String> conditions, List<String> keptColumns) {
         if (this.replanner == null || this.aggregated) {
             return false;
         }
@@ -203,8 +223,12 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
         }
         List<String> replan = new ArrayList<>(all);
         replan.addAll(this.runtimeConditions);
-        this.replanner.replan(replan);
+        List<String> nextColumns = keptColumns == null ? this.columns : List.copyOf(keptColumns);
+        if (!this.replanner.replan(replan, nextColumns)) {
+            return false;
+        }
         this.pushedConditions = List.copyOf(all);
+        this.columns = nextColumns;
         return true;
     }
 
@@ -262,7 +286,9 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
             LOGGER.debug("{}.filter(): {} runtime conditions", this.getClass().getName(), conditions.size());
             List<String> replan = new ArrayList<>(this.pushedConditions);
             replan.addAll(conditions);
-            this.replanner.replan(replan);
+            if (!this.replanner.replan(replan, this.columns)) {
+                return;
+            }
             this.runtimeConditions = List.copyOf(conditions);
         }
     }

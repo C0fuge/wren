@@ -209,9 +209,8 @@ class SparkTpchQ1PushdownIntegrationTest {
 
     /**
      * TPC-H Q13 shape: a {@code [NOT] LIKE} with two wildcards inside is no connector predicate in Spark, so
-     * {@code FlightLikePushdown} adds it to the scan's WHERE clause after the push-down; Spark keeps the filter as
-     * well. Results equal the direct Parquet read; a pattern with {@code _} and the setting {@code false} keep the
-     * filter in Spark only.
+     * {@code FlightLikePushdown} moves it into the scan's WHERE clause after the push-down. Results equal the direct
+     * Parquet read; a pattern with {@code _} and the setting {@code false} keep the filter in Spark only.
      */
     @Test
     void multiWildcardLikeIsSentToTheServerAndMatchesDirectParquet() {
@@ -238,13 +237,61 @@ class SparkTpchQ1PushdownIntegrationTest {
         assertEquals(spark.sql(query.formatted("direct_lineitem", "LIKE '%row _9%'")).collectAsList(),
                 underscore.collectAsList(), "Flight and direct results must match with '_'");
 
+        // As in Q13: the column only the LIKE needs is no longer read, and Spark has no LIKE left to evaluate.
+        String join = "SELECT c.l_orderkey, count(o.l_linenumber) AS n FROM direct_lineitem c LEFT OUTER JOIN %s o"
+                + " ON c.l_orderkey = o.l_orderkey AND o.l_comment NOT LIKE '%%b%%w 0%%'"
+                + " GROUP BY c.l_orderkey ORDER BY c.l_orderkey";
+        Dataset<Row> pruned = spark.sql(join.formatted("flight_lineitem"));
+        assertTrue(flightScanDescription(pruned).contains("like '%b%w 0%' escape"), "The LIKE must be pushed");
+        String optimized = pruned.queryExecution().optimizedPlan().toString().toLowerCase();
+        List<String> sparkFilters = new java.util.ArrayList<>();
+        pruned.queryExecution().optimizedPlan().foreach(new scala.runtime.AbstractFunction1<LogicalPlan,
+                scala.runtime.BoxedUnit>() {
+            @Override
+            public scala.runtime.BoxedUnit apply(LogicalPlan node) {
+                if (node instanceof org.apache.spark.sql.catalyst.plans.logical.Filter filter) {
+                    sparkFilters.add(filter.condition().sql().toLowerCase());
+                }
+                return scala.runtime.BoxedUnit.UNIT;
+            }
+        });
+        assertTrue(sparkFilters.stream().noneMatch(f -> f.contains(" like ")),
+                "Spark must not evaluate the pushed LIKE:\n" + optimized);
+        assertFalse(flightScanColumns(pruned).contains("l_comment"), "l_comment must not be read:\n" + optimized);
+        assertEquals(spark.sql(join.formatted("direct_lineitem")).collectAsList(), pruned.collectAsList(),
+                "Flight and direct join results must match");
+
         spark.conf().set("spark.flight.likePushdown", "false");
         try {
             Dataset<Row> off = spark.sql(query.formatted("flight_lineitem", "NOT LIKE '%b%w 0%'"));
             assertFalse(flightScanDescription(off).contains(" like "), "The setting must keep LIKE in Spark");
+            assertTrue(flightScanColumns(spark.sql(join.formatted("flight_lineitem"))).contains("l_comment"),
+                    "Without the rule Spark reads l_comment for its own filter");
         } finally {
             spark.conf().unset("spark.flight.likePushdown");
         }
+    }
+
+    /**
+     * Returns the columns of the only Flight scan of a query.
+     *
+     * @param query the query
+     * @return the column names
+     */
+    private static List<String> flightScanColumns(Dataset<Row> query) {
+        List<String> columns = new java.util.ArrayList<>();
+        query.queryExecution().optimizedPlan().foreach(new scala.runtime.AbstractFunction1<LogicalPlan,
+                scala.runtime.BoxedUnit>() {
+            @Override
+            public scala.runtime.BoxedUnit apply(LogicalPlan node) {
+                if (node instanceof DataSourceV2ScanRelation relation && relation.scan() instanceof FlightScan) {
+                    columns.addAll(java.util.Arrays.asList(relation.schema().fieldNames()));
+                    columns.addAll(java.util.Arrays.asList(relation.scan().readSchema().fieldNames()));
+                }
+                return scala.runtime.BoxedUnit.UNIT;
+            }
+        });
+        return columns;
     }
 
     /**

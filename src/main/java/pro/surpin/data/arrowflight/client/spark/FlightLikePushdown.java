@@ -6,12 +6,14 @@ import pro.surpin.data.arrowflight.client.spark.read.FlightScan;
 import org.apache.spark.sql.catalyst.expressions.And;
 import org.apache.spark.sql.catalyst.expressions.Attribute;
 import org.apache.spark.sql.catalyst.expressions.AttributeReference;
+import org.apache.spark.sql.catalyst.expressions.AttributeSet;
 import org.apache.spark.sql.catalyst.expressions.Expression;
 import org.apache.spark.sql.catalyst.expressions.Like;
 import org.apache.spark.sql.catalyst.expressions.Literal;
 import org.apache.spark.sql.catalyst.expressions.Not;
 import org.apache.spark.sql.catalyst.plans.logical.Filter;
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan;
+import org.apache.spark.sql.catalyst.plans.logical.Project;
 import org.apache.spark.sql.catalyst.rules.Rule;
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation;
 import org.apache.spark.sql.internal.SQLConf;
@@ -19,8 +21,7 @@ import org.apache.spark.sql.types.DataTypes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.collection.JavaConverters;
-import scala.runtime.AbstractFunction1;
-import scala.runtime.BoxedUnit;
+import scala.runtime.AbstractPartialFunction;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,10 +31,12 @@ import java.util.List;
  *
  * <p>Spark translates only {@code LIKE} patterns of the shapes {@code 'abc%'}, {@code '%abc'} and {@code '%abc%'}
  * into connector predicates; a filter such as TPC-H Q13's {@code o_comment NOT LIKE '%special%requests%'} stays in
- * Spark, so every row of the column crosses the wire. After Spark's scan push-down this rule finds each such
- * {@code [NOT] LIKE} conjunct of a Filter directly above a Flight scan without a pushed aggregation and adds it to the
- * scan's WHERE clause ({@link FlightScan#pushConditions(List)}, which plans the scan again). The Filter stays in
- * Spark's plan, so the result is the same whatever the server returns beyond the matching rows.
+ * Spark, so every row of the column crosses the wire. After Spark's scan push-down this rule moves each such
+ * {@code [NOT] LIKE} conjunct of a Filter directly above a Flight scan without a pushed aggregation into the scan's
+ * WHERE clause ({@link FlightScan#pushConditions(List, List)}, which plans the scan again) and removes it from the
+ * Filter; when a Project above the Filter shows that a scan column was needed only by moved conjuncts (Q13's
+ * {@code o_comment}), the scan stops reading it. The server evaluates these patterns exactly as Spark does, as for
+ * the {@code LIKE} shapes Spark pushes itself.
  *
  * <p>Only patterns with the same meaning in Spark and in the server's SQL are sent: a non-null string literal of
  * literal characters and {@code %} wildcards (Spark's escapes of {@code %}, {@code _} and the escape character are
@@ -61,44 +64,103 @@ public final class FlightLikePushdown extends Rule<LogicalPlan> {
     }
 
     /**
-     * Adds the pushable {@code LIKE} conjuncts of Filters over Flight scans to those scans. The plan itself is not
-     * changed.
+     * Moves the pushable {@code LIKE} conjuncts of Filters over Flight scans into those scans and drops the columns
+     * only they used from the scans.
      *
      * @param plan the logical plan
-     * @return the same plan
+     * @return the plan without the pushed conjuncts
      */
     @Override
     public LogicalPlan apply(LogicalPlan plan) {
         if (!"true".equalsIgnoreCase(SQLConf.get().getConfString(ENABLED, "true").trim())) {
             return plan;
         }
-        plan.foreach(new AbstractFunction1<LogicalPlan, BoxedUnit>() {
+        // Top down: a Project above the Filter is seen first and tells which scan columns stay needed.
+        return plan.transformDown(new AbstractPartialFunction<LogicalPlan, LogicalPlan>() {
             @Override
-            public BoxedUnit apply(LogicalPlan node) {
-                if (node instanceof Filter filter && filter.child() instanceof DataSourceV2ScanRelation relation
-                        && relation.scan() instanceof FlightScan scan && !scan.aggregated()) {
-                    push(filter.condition(), relation, scan);
+            public boolean isDefinedAt(LogicalPlan node) {
+                return filterOverScan(node instanceof Project project ? project.child() : node) != null;
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public <A1 extends LogicalPlan, B1> B1 applyOrElse(A1 node, scala.Function1<A1, B1> otherwise) {
+                if (!isDefinedAt(node)) {
+                    return otherwise.apply(node);
                 }
-                return BoxedUnit.UNIT;
+                if (node instanceof Project project) {
+                    LogicalPlan child = push((Filter) project.child(), project.references());
+                    return (B1) (child == project.child() ? project : new Project(project.projectList(), child));
+                }
+                return (B1) push((Filter) node, null);
             }
         });
-        return plan;
     }
 
-    private static void push(Expression condition, DataSourceV2ScanRelation relation, FlightScan scan) {
+    private static DataSourceV2ScanRelation filterOverScan(LogicalPlan node) {
+        if (node instanceof Filter filter && filter.child() instanceof DataSourceV2ScanRelation relation
+                && relation.scan() instanceof FlightScan scan && !scan.aggregated()) {
+            return relation;
+        }
+        return null;
+    }
+
+    /**
+     * Pushes a Filter's {@code LIKE} conjuncts into the scan below it.
+     *
+     * @param filter a Filter directly above a Flight scan
+     * @param above columns the parent Project uses, or null when every scan column stays (no Project)
+     * @return the Filter with the remaining conjuncts over the (possibly narrower) scan, or the unchanged Filter
+     */
+    private static LogicalPlan push(Filter filter, AttributeSet above) {
+        DataSourceV2ScanRelation relation = (DataSourceV2ScanRelation) filter.child();
+        FlightScan scan = (FlightScan) relation.scan();
         List<Expression> conjuncts = new ArrayList<>();
-        splitConjuncts(condition, conjuncts);
+        splitConjuncts(filter.condition(), conjuncts);
         SqlRenderer renderer = scan.renderer();
         List<String> conditions = new ArrayList<>();
+        List<Expression> remaining = new ArrayList<>();
         for (Expression conjunct : conjuncts) {
             String rendered = render(conjunct, relation, renderer);
             if (rendered != null) {
                 conditions.add(rendered);
+            } else {
+                remaining.add(conjunct);
             }
         }
-        if (!conditions.isEmpty() && scan.pushConditions(conditions)) {
-            LOGGER.debug("Pushed {} LIKE conditions to the Flight scan of {}", conditions.size(), scan.tableName());
+        if (conditions.isEmpty()) {
+            return filter;
         }
+        List<AttributeReference> output = JavaConverters.seqAsJavaListConverter(relation.output()).asJava();
+        List<AttributeReference> kept = output;
+        if (above != null) {
+            AttributeSet needed = above;
+            for (Expression conjunct : remaining) {
+                needed = needed.$plus$plus(conjunct.references());
+            }
+            AttributeSet used = needed;
+            kept = output.stream().filter(used::contains).toList();
+            if (kept.isEmpty()) {
+                kept = output.subList(0, 1); // a scan reads at least one column
+            }
+        }
+        List<String> keptNames = kept.size() == output.size() ? null
+                : kept.stream().map(AttributeReference::name).toList();
+        if (!scan.pushConditions(conditions, keptNames)) {
+            return filter;
+        }
+        LOGGER.debug("Pushed {} LIKE conditions to the Flight scan of {}", conditions.size(), scan.tableName());
+        LogicalPlan child = keptNames == null ? relation : new DataSourceV2ScanRelation(relation.relation(), scan,
+                JavaConverters.asScalaBufferConverter(kept).asScala().toList(), relation.keyGroupedPartitioning(),
+                relation.ordering());
+        if (remaining.isEmpty()) {
+            return child;
+        }
+        Expression condition = remaining.get(0);
+        for (Expression conjunct : remaining.subList(1, remaining.size())) {
+            condition = new And(condition, conjunct);
+        }
+        return new Filter(condition, child);
     }
 
     private static void splitConjuncts(Expression expression, List<Expression> out) {

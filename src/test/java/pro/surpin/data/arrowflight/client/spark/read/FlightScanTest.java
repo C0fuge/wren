@@ -134,14 +134,14 @@ class FlightScanTest {
         List<List<String>> replans = new ArrayList<>();
         FlightScan scan = new FlightScan(mock(Configuration.class), table, replans::add, false, false, true);
 
-        assertTrue(scan.pushConditions(List.of("a", "b", "a")));
+        assertTrue(scan.pushConditions(List.of("a", "b", "a"), null));
         assertEquals(List.of(List.of("a", "b")), replans);
-        assertTrue(!scan.pushConditions(List.of("b")), "nothing new");
+        assertTrue(!scan.pushConditions(List.of("b"), null), "nothing new");
         assertEquals(1, replans.size());
 
         scan.filter(new Filter[] {new In("id", new Object[] {1L})});
         assertEquals(List.of("a", "b", "rt"), replans.get(1));
-        assertTrue(scan.pushConditions(List.of("c")));
+        assertTrue(scan.pushConditions(List.of("c"), null));
         assertEquals(List.of("a", "b", "c", "rt"), replans.get(2));
         assertEquals(List.of("a", "b", "c"), scan.pushedConditions());
 
@@ -149,10 +149,40 @@ class FlightScanTest {
         assertEquals(0, noRuntime.filterAttributes().length);
         noRuntime.filter(new Filter[] {new In("id", new Object[] {1L})});
         assertEquals(3, replans.size());
-        assertTrue(noRuntime.pushConditions(List.of("x")));
+        assertTrue(noRuntime.pushConditions(List.of("x"), null));
 
         assertTrue(!new FlightScan(mock(Configuration.class), table, replans::add, false, true, false)
-                .pushConditions(List.of("x")));
-        assertTrue(!new FlightScan(mock(Configuration.class), table).pushConditions(List.of("x")));
+                .pushConditions(List.of("x"), null));
+        assertTrue(!new FlightScan(mock(Configuration.class), table).pushConditions(List.of("x"), null));
+    }
+
+    /** Pruning columns needs a replanner that can change them; the default one refuses and nothing changes. */
+    @Test
+    void pushConditionsWithColumnsNeedsAColumnReplanner() {
+        Table table = keyedTable(1L << 40);
+        List<List<String>> replans = new ArrayList<>();
+        FlightScan plain = new FlightScan(mock(Configuration.class), table, replans::add, false, false, false);
+        assertTrue(!plain.pushConditions(List.of("a"), List.of("id")));
+        assertTrue(replans.isEmpty() && plain.pushedConditions().isEmpty());
+
+        List<List<String>> columns = new ArrayList<>();
+        FlightScan.Replanner pruning = new FlightScan.Replanner() {
+            @Override
+            public void replan(List<String> extra) {
+                replan(extra, null);
+            }
+
+            @Override
+            public boolean replan(List<String> extra, List<String> names) {
+                replans.add(extra);
+                columns.add(names);
+                return true;
+            }
+        };
+        FlightScan scan = new FlightScan(mock(Configuration.class), table, pruning, false, false, false);
+        assertTrue(scan.pushConditions(List.of("a"), List.of("id")));
+        assertTrue(scan.pushConditions(List.of("b"), null));
+        assertEquals(List.of(List.of("a"), List.of("a", "b")), replans);
+        assertEquals(java.util.Arrays.asList(List.of("id"), List.of("id")), columns);
     }
 }
