@@ -46,14 +46,12 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
     Log): `scripts/perf/tpch.sh`, `TpchPerfTest` (-Pperf; modes parquet/flight/catalog/jdbc, `ANSI=`), workflow
     `Perf` (manual; all files as artifact). Next:
     (a) Q1 explained (2026-10-28, see Log): Spark pushes arithmetic aggregates only with
-        `spark.sql.ansi.enabled=true`; views and `FlightCatalog` behave the same. Remaining slower-than-direct
-        queries (local SF1, ANSI on): Q13 1.7x — `NOT LIKE '%special%requests%'` is not a DSv2 predicate (only
-        STARTS_WITH/ENDS_WITH/CONTAINS translate), so every `o_comment` string crosses the wire; look at whether
-        `contains`-shaped LIKEs could be pushed or the transfer of strings made cheaper (string vector
-        conversion in `FlightArrowColumnVector`?). Q5 1.3-1.5x — its plan has two SortMergeJoins where direct
-        has one (scan size estimates for filtered `orders`/`customer`; compare `estimateStatistics` with the
-        Parquet relation's). Q7 ~1.3x, Q3 1.1-1.3x. Perf run 40779266604 (ANSI on) has all plans as artifact.
-        Next session starts here, with Q13;
+        `spark.sql.ansi.enabled=true`; views and `FlightCatalog` behave the same. Q13 done 2026-10-29
+        (`FlightLikePushdown`, see Log: 1.46x -> 0.75x of direct). Remaining slower-than-direct queries (Perf run
+        40793985564, SF1, ANSI on): Q5 1.6x — its plan has two SortMergeJoins where direct has one (scan size
+        estimates for filtered `orders`/`customer`; compare `estimateStatistics` with the Parquet relation's, plans
+        in the artifacts of Perf runs 40779266604 / 40793985564). Q7 ~1.3x, Q3 1.1-1.3x. Next session starts here,
+        with Q5;
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -244,3 +242,21 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   239 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; the test class green on 4.0. CI run 40788891671 green
   (4 jobs); Perf run 40788895111 (SF1, ANSI on, Q17, parquet/flight/catalog) green, rows equal. Next: rest of S5 (a)
   (Q13).
+- 2026-10-29 (session): S5 (a) Q13 — `NOT LIKE '%special%requests%'` is no DSv2 predicate (Spark translates only
+  `abc%`/`%abc`/`%abc%`), so every `o_comment` crossed the wire. New optimizer rule `FlightLikePushdown` (registered
+  with `FlightPushedCounts` by the new `FlightOptimizations`, in `experimental.extraOptimizations`, i.e. after Spark's
+  push-down): `[NOT] LIKE` conjuncts of a Filter directly above a non-aggregated Flight scan, on a plain string column,
+  pattern of literals and `%` only (Spark escapes resolved; `_` and invalid escapes stay in Spark), are rendered as
+  `col like '...' escape '\'`, added to the scan (`FlightScan.pushConditions`, re-plans on the server) and removed
+  from the Filter; with a Project above, scan columns nothing else needs are dropped (relation copied via `makeCopy`,
+  since the constructor differs on 3.3). Non-aggregated scans now always have a replanner (runtime filtering is a
+  separate flag and keeps the pushed conditions). Setting `spark.flight.likePushdown` (default true); README note.
+  Tests: `FlightLikePushdownTest` (pattern conversion), `FlightScanTest` (pushConditions/replans/columns),
+  `SparkTpchQ1PushdownIntegrationTest.multiWildcardLikeIsSentToTheServerAndMatchesDirectParquet` (results = direct
+  Parquet, case-sensitivity, `_` stays, Q13-shaped left join prunes `l_comment` and leaves no LIKE in Spark, setting
+  off). A first version that kept the filter in Spark only reached 1.35x (Perf run 40792865155: `o_comment` still
+  read). Perf run 40793985564 (SF1, ANSI on, parquet/flight, all queries green, rows equal): Q13 992 vs 1323 ms
+  (0.75x); Q5 1.63x, Q7 1.33x still slower. Also fixed a race in `SparkRuntimeFilterTest` (AQE restore checked
+  before the asynchronous query listener ran; failed once on 4.0 in CI run 40794869030): waits for the listener bus.
+  Local `verify` (system `mvn`; `./mvnw` cannot download Maven in the session, use `MVN=mvn scripts/install-kestrel.sh`):
+  245 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; new tests green on 4.0. CI run 40795768365 green (4 jobs). Next: S5 (a) Q5.
