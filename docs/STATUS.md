@@ -30,8 +30,7 @@ matching, `CREATE TABLE ... AS SELECT` through the catalog, column comments / ta
 
 S4. **Upstream ideas.** Upstream github.com/VadimSurpin/arrow-flight-server branch
     `feat/starrocks-native-integration`, `flight-spark` (compared 2026-10-28 at upstream 1de5f6b). Part 1 done
-    (server column statistics in the filter estimate, see Log). Only (c) remains and it waits on the server, so the
-    next session takes S5:
+    (server column statistics in the filter estimate, see Log). Only (c) remains and it waits on the server:
     (b) Runtime filtering: done 2026-10-28 (see Log). Possible follow-ups, not scheduled: check whether Spark 4.0
         still deadlocks without `FlightAqeGuard` (not reproduced here; the guard is installed on both lines);
         runtime filters on `date` keys.
@@ -41,43 +40,29 @@ S4. **Upstream ideas.** Upstream github.com/VadimSurpin/arrow-flight-server bran
         (Open questions).
     Not portable without server changes (Open questions): runtime bloom filters in the ticket, complete
     aggregation push-down (`supportCompletePushDown`).
-S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading the same Parquet directly, with
-    Spark's JDBC data source + Flight SQL JDBC driver as baseline (maintainer, 15:00). Part 1 done (harness, see
-    Log): `scripts/perf/tpch.sh`, `TpchPerfTest` (-Pperf; modes parquet/flight/catalog/jdbc, `ANSI=`), workflow
-    `Perf` (manual; all files as artifact). Next:
-    (a) Q1 explained (2026-10-28, see Log): Spark pushes arithmetic aggregates only with
-        `spark.sql.ansi.enabled=true`; views and `FlightCatalog` behave the same. Q13 done 2026-10-29
-        (`FlightLikePushdown`, see Log: 1.46x -> 0.75x of direct). Q5 plan fixed 2026-10-29 (`statistics.columnWidth`,
-        see Log): Flight and direct plans now have the same joins. Decimal/null read path 2026-10-29 (see Log):
-        local SF1 Q5 1.87x -> 1.42x, Q3 1.37x -> 1.07x; CI Perf run 40806272377: all 22 at 0.79x of direct, Q5 1.28x,
-        Q11 1.51x (277 vs 418 ms). Q5's remaining gap measured 2026-10-29 with probe
-        scans (`QUERIES=probes`, see Log): two causes. (1) Parallelism: the server's default `endpointsPerServer=1`
-        gives every Flight scan one Spark task per server node (direct Parquet: 4 at SF1), so Q5's shuffle of
-        `lineitem` runs on one core; `ENDPOINTS_PER_SERVER=4` fixes that (local Q5 1.33x -> 0.94x; CI all 22 at
-        0.72x of direct, Q5 0.99x, Q11 0.84x). (2) The bare stream itself: probes `p01` (Q5's 4 `lineitem` columns)
-        and `p03` (all 16) still take 1.3-1.6x of direct on CI runners, with 1 or 4 endpoints (local runs are
-        noisier: 0.76-2.07x). (2) explained 2026-10-29 (see Log): with server and Spark on one 4-core host the
-        stream is CPU-bound on the host, and most of that CPU is outside Spark (server DoGet threads = DuckDB scan
-        ~1.3 cores, gRPC/Netty on both sides ~1 core, Spark tasks ~0.6) — the cost a cluster pays on the server
-        nodes, not the executors; the connector's own read path is a few % of the client's samples. Nothing left to
-        fix in the connector for (2). (1)'s connector side measured the same day: a range split on `lineitem`
-        (`partition.byColumn=l_orderkey`, `partition.size=4`, bounds 1..6000001; new `perf.flight.options` /
-        `FLIGHT_OPTIONS` / Perf input `flight_options`) is as fast as 4 server endpoints (local Q5 1791 -> 1346 ms,
-        4 endpoints 1462); the hash split (no bounds) fails on the server (Open questions). CI Perf run
-        40820294049 (1 endpoint, range splits of `lineitem`/`orders`): all 22 at 0.80x of direct, p02 1.18x (as with
-        4 endpoints). README section "Parallelism" done 2026-10-29 (see Log), with a fix found on the way: range splits
-        dropped rows outside the bounds and null keys, and repeated slices for narrow bounds (`CoveringRangeSplit`).
-        Write-path errors serializable too (same day, see Log).
-    (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
-        scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
-    (b) JDBC baseline types in the report: done 2026-10-29 (see Log).
-    (c) SF10 fits a CI runner (2026-10-29, see Log: single runs, rows equal; 0.88x of direct with one task per scan,
-        0.82x with range splits of the five big tables). Next session starts here: SF10 medians (`runs=3`, ~25 min per
-        mode) with range splits and with `endpoints_per_server=4`, plus the JDBC baseline at SF10 (`modes=flight,jdbc`;
-        check it fits the 120 min job timeout with `runs=1` first); then `partition.size` 8/16 and result mode
-        `complete` vs `partial` at SF10, and S5 is done.
+(S5 Perf: done 2026-10-29, see Log and README "Performance (TPC-H)". SF10 on a 4-core runner, ANSI on, medians
+of 3: the connector takes 0.79x of direct Parquet's time with range splits in 4 of the five big tables, 0.78x with
+`endpoints_per_server=4`; splits in 8 / 16 are slower on 4 cores (0.85x / 0.95x); the JDBC baseline takes 2.82x of
+direct and 3.3x of the connector (1 run). Result mode `complete` vs `partial` not measured: the client core always
+asks for `partial` (`Client.callOptions`), and on the one-node Perf server `complete` is one endpoint per scan, i.e.
+`partial` with 1 endpoint (Open questions). Possible follow-ups, not scheduled: Q5/Q8/Q9 stay 1.1-1.3x of direct at
+SF10 with splits (joins of `lineitem` with the shuffled `orders`/`partsupp` side); a run on a multi-node server.)
+
+S6. **Runtime filters on `date` keys** (S4 (b) follow-up): `FlightScan` (`SupportsRuntimeFiltering`) offers only
+    `int`/`bigint` columns to dynamic pruning (`filterAttributes`, `filter()` accepts `Integer`/`Long` IN values).
+    Add `date` columns: check which value class Spark's `In` carries for a date key (`java.sql.Date` or
+    `LocalDate`, depending on `spark.sql.datetime.java8API.enabled`), push an IN list / min-max range of `date`
+    literals, Spark-local test with a date-keyed join (`SparkRuntimeFilterTest`; rows unchanged, filter in the
+    plan). Small; then pick the next unscheduled follow-up (S3: case-insensitive names; S4 (b): Spark 4.0 without
+    `FlightAqeGuard`).
 
 ## Open questions
+
+- For the maintainer / client core (FYI, 2026-10-29, S5 c): the connector cannot ask for result mode `complete`:
+  the client core adds `x-flight-result-mode: partial` to every call (`Client.callOptions`). S5 therefore did not
+  compare `complete` with `partial`; on the one-node Perf server `complete` would be one endpoint per scan, the same
+  as `partial` with `endpointsPerServer=1` (measured: 0.88x of direct at SF10, single runs). A meaningful comparison
+  needs a multi-node server and a client-core switch for the header; say if wanted.
 
 - For the maintainer (FYI, 2026-10-29, S5 a; a correctness fix, say if the old behaviour is wanted anywhere):
   range splits (`partition.byColumn` + `partition.lowerBound`/`upperBound`) used to read only
@@ -408,3 +393,18 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   summary and artifact (the artifact host is not reachable from the session; the per-query `tpch <mode> <query>`
   lines and now the type notes are in the job log). Lock commit carries a `Co-Authored-By` trailer by mistake (no
   rewrite of `main`); later commits none.
+- 2026-10-29 (session): S5 (c) done, so S5 is done. SF10, ANSI on, modes parquet/flight, medians of 3, all rows
+  equal; runners differ in speed (direct totals 148-270 s), so only ratios compare (connector total / direct total;
+  geometric mean of per-query ratios in brackets). Range splits in 4 (`lineitem`/`orders` on the order key
+  1..60000001, `partsupp`/`part` on the part key 1..2000001, `customer` 1..1500001): Perf run 40839998203, 0.79x
+  (0.76; without Q1 0.91x), slowest Q9 1.16x, Q8 1.14x, Q5 1.12x. `endpoints_per_server=4`, no splits: 40840002039,
+  0.78x (0.69; without Q1 0.88x), Q5 1.31x, Q2 1.17x, Q8 1.15x. Splits in 8: 40843244250, 0.85x (0.82), Q8 1.29x;
+  in 16: 40843253331, 0.95x (0.89), Q9 1.32x — more slices than the runner's 4 cores cost. JDBC baseline, 1 run:
+  40840004976 (job 21 min, fits the 120 min timeout): JDBC 2.82x of direct (2.43), 3.3x of the connector's time
+  (connector there, no splits: 0.85x), worst Q11 11.4x, Q8 6.9x of direct; type notes as at SF1. Result mode
+  `complete` not measured (the client core always sends `partial`; Open questions). Workflow `Perf`: one concurrency
+  group per run, so dispatches run in parallel on separate runners (the shared group kept only one waiting run).
+  README "Performance (TPC-H)": SF10 results, all Perf inputs. Job logs via the GitHub MCP tool (`get_job_logs`);
+  `gh api .../logs` redirects to a blob host the session cannot reach. The lock commit again carries
+  `Co-Authored-By`/`Claude-Session` trailers by mistake (no rewrite of `main`); later commits none. No code change, so
+  no CI run. Next: S6.

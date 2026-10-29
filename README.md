@@ -202,8 +202,15 @@ instead of / besides TPC-H queries: the bare `lineitem` stream (`p01`: Q5's four
 differently from the reference; the connector has none, the JDBC baseline reads `bigint` as `decimal(20,0)`, `int` as
 `bigint` and `decimal(15,2)` as `decimal(38,18)` from the driver's metadata — values compare equal, but Spark computes
 on the wider types there), `plans/` (executed plans),
-`env.txt`, `server.log`. In GitHub Actions: workflow `Perf` (manual, inputs `sf`, `runs`, `modes`, `queries`, `ansi`),
-results kept as an artifact.
+`env.txt`, `server.log`. In GitHub Actions: workflow `Perf` (manual, inputs `sf`, `runs`, `modes`, `queries`, `ansi`,
+`endpoints_per_server`, `flight_options`, `kestrel_ref`; dispatches run in parallel), results kept as an artifact.
+
+Results at SF10 (GitHub runner, 4 cores, server and Spark on the same host, `ANSI=true`, medians of 3; total time of
+the 22 queries relative to Spark reading the Parquet files directly): the connector takes 0.79x with range splits in
+4 of the five big tables (`FLIGHT_OPTIONS`, see "Parallelism") and 0.78x with `ENDPOINTS_PER_SERVER=4`; more slices
+than cores are slower (8: 0.85x, 16: 0.95x). Single queries range from 0.07x (Q1, aggregation pushed to the server)
+to about 1.1-1.3x (Q5, Q8, Q9: joins that shuffle `lineitem`). The JDBC baseline takes 2.82x of direct, 3.3x the
+connector's time (one run). Details and run ids in `docs/STATUS.md` (Log, 2026-10-29).
 
 ## License
 
