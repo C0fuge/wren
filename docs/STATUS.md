@@ -16,6 +16,8 @@
 
 ## Next steps (one per session; small and finished)
 
+> **Maintainer, 2026-10-29 13:15 - FINISH MODE:** finish S4 (upstream ideas already started) and S5 (perf vs direct Parquet and vs the JDBC baseline, numbers in the Log); then write "WREN DONE" and stop. No new items.
+
 > **Maintainer, 2026-10-28 15:00:** keep the connector native (Arrow batches straight into Spark's columnar
 > reader, no JDBC layer anywhere). In S5 add Spark's built-in JDBC data source with the Flight SQL JDBC driver as a
 > baseline so the native gain is measured.
