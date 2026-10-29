@@ -162,7 +162,9 @@ factor `SF`, default 1), starts the server (built at `kestrel.ref`) on it as a s
 queries in Spark local mode (`TpchPerfTest`, `-Pperf`) three ways: Spark reading the Parquet files directly (the
 reference), the connector (`format("flight")`), and Spark's JDBC data source with the Flight SQL JDBC driver
 (baseline; big tables split into key ranges); mode `catalog` reads the connector through `FlightCatalog`
-instead, and `ANSI=true|false` sets `spark.sql.ansi.enabled` for every mode (see above). Every mode's rows are compared with the reference. Results in
+instead, and `ANSI=true|false` sets `spark.sql.ansi.enabled` for every mode (see above). `QUERIES=probes` (or e.g. `p1,5`) runs probe scans
+instead of / besides TPC-H queries: the bare `lineitem` stream (`p01`: Q5's four columns, `p02`: the same shuffled by
+`l_orderkey`, `p03`: all columns; `src/test/resources/tpch-queries/pNN.sql`). Every mode's rows are compared with the reference. Results in
 `target/perf`: `times.csv` (every run), `summary.md` (medians, totals, ratios), `plans/` (executed plans),
 `env.txt`, `server.log`. In GitHub Actions: workflow `Perf` (manual, inputs `sf`, `runs`, `modes`, `queries`, `ansi`),
 results kept as an artifact.

@@ -20,7 +20,7 @@ on:
         type: string
         default: "parquet,flight,jdbc"
       queries:
-        description: "all, or query numbers (1,6,14)"
+        description: "all, query numbers (1,6,14), probes or probe names (p1,p2)"
         type: string
         default: "all"
       ansi:

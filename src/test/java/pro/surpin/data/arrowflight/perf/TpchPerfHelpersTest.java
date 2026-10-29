@@ -79,20 +79,23 @@ class TpchPerfHelpersTest {
         assertEquals(List.of("parquet", "flight"), TpchPerfTest.modes("flight,parquet,flight,"));
     }
 
-    /** {@code all} selects the 22 queries; a list selects those. */
+    /** {@code all} selects the 22 queries, {@code probes} the probe scans; a list selects those. */
     @Test
     void querySelection() {
         assertEquals(22, TpchPerfTest.queries("all").size());
-        assertEquals(List.of(1, 6, 14), TpchPerfTest.queries("1, 6,14"));
+        assertEquals("q22", TpchPerfTest.queries("all").get(21));
+        assertEquals(List.of("q01", "q06", "q14"), TpchPerfTest.queries("1, 6,14"));
+        assertEquals(List.of("p01", "p02", "p03"), TpchPerfTest.queries("probes"));
+        assertEquals(List.of("q05", "p01", "q13"), TpchPerfTest.queries("5,P1,q13"));
     }
 
     /** Summary: medians, a failed query, totals over the queries that ran, ratios to the reference. */
     @Test
     void summaryTable() {
-        Map<String, Map<Integer, long[]>> times = new LinkedHashMap<>();
-        times.put("parquet", new LinkedHashMap<>(Map.of(1, new long[] {300, 100, 200}, 6, new long[] {50})));
-        times.put("flight", new LinkedHashMap<>(Map.of(1, new long[] {100, 100, 100})));
-        String md = TpchPerfTest.summary(times, List.of(1, 6), 3);
+        Map<String, Map<String, long[]>> times = new LinkedHashMap<>();
+        times.put("parquet", new LinkedHashMap<>(Map.of("q01", new long[] {300, 100, 200}, "q06", new long[] {50})));
+        times.put("flight", new LinkedHashMap<>(Map.of("q01", new long[] {100, 100, 100})));
+        String md = TpchPerfTest.summary(times, List.of("q01", "q06"), 3);
         assertTrue(md.contains("| query | parquet | flight | flight/parquet |\n|---|---|---|---|\n"), md);
         assertTrue(md.contains("| q01 | 200 | 100 | 0.50 |"), md);
         assertTrue(md.contains("| q06 | 50 | failed | - |"), md);

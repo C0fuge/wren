@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * perf.flight.password} (perf), {@code perf.flight.schema} (tpch), {@code perf.modes} (parquet,flight,jdbc; also
  * {@code catalog}: the tables of {@link FlightCatalog} instead of {@code format("flight")} views; parquet always
  * runs first as the reference), {@code perf.ansi} ({@code spark.sql.ansi.enabled} for every mode; unset: Spark's
- * default; Spark pushes aggregates over {@code + - * /} only in ANSI mode), {@code perf.runs} (3 timed runs per query and mode), {@code perf.queries} (all, or e.g. 1,6,14),
+ * default; Spark pushes aggregates over {@code + - * /} only in ANSI mode), {@code perf.runs} (3 timed runs per query and mode), {@code perf.queries} (all, or e.g. 1,6,14; {@code probes} or e.g. p1: probe scans, see {@link #queries}),
  * {@code perf.jdbc.partitions} (Spark JDBC partitions of the big tables, default the core count), {@code
  * perf.out} (target/perf).
  *
@@ -65,6 +65,11 @@ class TpchPerfTest {
     private static final String CATALOG = "flight";
     private static final String CATALOG_CONF = "spark.sql.catalog." + CATALOG;
     private static final String ANSI_CONF = "spark.sql.ansi.enabled";
+    /**
+     * Probe queries {@code p01..pNN} (not TPC-H): scans that isolate the read path, see the comments in the
+     * resource files.
+     */
+    private static final int PROBES = 3;
 
     /**
      * Runs the selected TPC-H queries in every mode and writes the result files.
@@ -80,7 +85,7 @@ class TpchPerfTest {
         Files.createDirectories(out);
         int runs = Integer.parseInt(System.getProperty("perf.runs", "3"));
         List<String> modes = modes(System.getProperty("perf.modes", "parquet,flight,jdbc"));
-        List<Integer> queries = queries(System.getProperty("perf.queries", "all"));
+        List<String> queries = queries(System.getProperty("perf.queries", "all"));
         int cores = Runtime.getRuntime().availableProcessors();
 
         SparkSession.Builder builder = SparkSession.builder()
@@ -105,8 +110,8 @@ class TpchPerfTest {
 
         StringBuilder csv = new StringBuilder("mode,query,run,millis,rows\n");
         StringBuilder errors = new StringBuilder();
-        Map<String, Map<Integer, long[]>> times = new LinkedHashMap<>();
-        Map<Integer, List<List<Object>>> reference = new LinkedHashMap<>();
+        Map<String, Map<String, long[]>> times = new LinkedHashMap<>();
+        Map<String, List<List<Object>>> reference = new LinkedHashMap<>();
         long started = System.nanoTime();
         try {
             for (String mode : modes) {
@@ -117,9 +122,9 @@ class TpchPerfTest {
                     continue;
                 }
                 Path plans = Files.createDirectories(out.resolve("plans").resolve(mode));
-                Map<Integer, long[]> modeTimes = new LinkedHashMap<>();
+                Map<String, long[]> modeTimes = new LinkedHashMap<>();
                 times.put(mode, modeTimes);
-                for (int q : queries) {
+                for (String q : queries) {
                     String sql = query(q);
                     long[] millis = new long[runs];
                     try {
@@ -129,11 +134,11 @@ class TpchPerfTest {
                             Dataset<Row> frame = spark.sql(sql);
                             List<Row> result = frame.collectAsList();
                             millis[run] = (System.nanoTime() - t0) / 1_000_000;
-                            csv.append(String.format(Locale.ROOT, "%s,%d,%d,%d,%d%n",
+                            csv.append(String.format(Locale.ROOT, "%s,%s,%d,%d,%d%n",
                                     mode, q, run + 1, millis[run], result.size()));
                             if (run == 0) {
                                 rows = canonical(result);
-                                Files.writeString(plans.resolve(String.format(Locale.ROOT, "q%02d.txt", q)),
+                                Files.writeString(plans.resolve(q + ".txt"),
                                         frame.queryExecution().executedPlan().toString());
                             }
                         }
@@ -141,13 +146,13 @@ class TpchPerfTest {
                         if (REFERENCE.equals(mode)) {
                             reference.put(q, rows);
                         } else if (reference.containsKey(q) && !sameRows(reference.get(q), rows)) {
-                            errors.append(String.format(Locale.ROOT, "%s q%02d: rows differ from %s: %s%n",
+                            errors.append(String.format(Locale.ROOT, "%s %s: rows differ from %s: %s%n",
                                     mode, q, REFERENCE, firstDifference(reference.get(q), rows)));
                         }
                     } catch (RuntimeException e) {
-                        errors.append(String.format(Locale.ROOT, "%s q%02d: %s%n", mode, q, e));
+                        errors.append(String.format(Locale.ROOT, "%s %s: %s%n", mode, q, e));
                     }
-                    System.out.printf(Locale.ROOT, "tpch %s q%02d %s ms%n", mode, q,
+                    System.out.printf(Locale.ROOT, "tpch %s %s %s ms%n", mode, q,
                             modeTimes.containsKey(q) ? Arrays.toString(millis) : "failed");
                 }
             }
@@ -352,11 +357,11 @@ class TpchPerfTest {
      * Markdown summary: median milliseconds per query and mode, totals and ratios to the reference.
      *
      * @param times timings per mode and query
-     * @param queries query numbers
+     * @param queries query names
      * @param runs runs per query
      * @return markdown table
      */
-    static String summary(Map<String, Map<Integer, long[]>> times, List<Integer> queries, int runs) {
+    static String summary(Map<String, Map<String, long[]>> times, List<String> queries, int runs) {
         List<String> modes = new ArrayList<>(times.keySet());
         StringBuilder md = new StringBuilder("TPC-H, median of " + runs + " runs (ms)\n\n| query |");
         for (String mode : modes) {
@@ -370,8 +375,8 @@ class TpchPerfTest {
         md.append('\n').append("|---".repeat(1 + modes.size() * 2 - (times.containsKey(REFERENCE) ? 1 : 0)))
                 .append("|\n");
         Map<String, Long> totals = new LinkedHashMap<>();
-        for (int q : queries) {
-            md.append(String.format(Locale.ROOT, "| q%02d |", q));
+        for (String q : queries) {
+            md.append("| ").append(q).append(" |");
             for (String mode : modes) {
                 long[] t = times.get(mode).get(q);
                 md.append(' ').append(t == null ? "failed" : String.valueOf(median(t))).append(" |");
@@ -401,10 +406,10 @@ class TpchPerfTest {
      * @param md markdown under construction
      * @param times timings
      * @param modes modes in order
-     * @param q query number
+     * @param q query name
      */
-    private static void appendRatios(StringBuilder md, Map<String, Map<Integer, long[]>> times,
-            List<String> modes, int q) {
+    private static void appendRatios(StringBuilder md, Map<String, Map<String, long[]>> times,
+            List<String> modes, String q) {
         long[] ref = times.containsKey(REFERENCE) ? times.get(REFERENCE).get(q) : null;
         for (String mode : modes) {
             if (REFERENCE.equals(mode) || !times.containsKey(REFERENCE)) {
@@ -442,33 +447,46 @@ class TpchPerfTest {
     }
 
     /**
-     * Parses the query selection.
+     * Parses the query selection: {@code all} (the 22 TPC-H queries), {@code probes} (every {@link #PROBES}
+     * query), query numbers ({@code 5} = {@code q05}) and probe names ({@code p1} = {@code p01}), comma-separated.
      *
-     * @param value {@code all} or comma-separated query numbers
-     * @return query numbers
+     * @param value selection
+     * @return query names ({@code qNN}, {@code pNN}) in order
      */
-    static List<Integer> queries(String value) {
-        if ("all".equals(value.trim())) {
-            List<Integer> all = new ArrayList<>();
-            for (int q = 1; q <= 22; q++) {
-                all.add(q);
+    static List<String> queries(String value) {
+        List<String> names = new ArrayList<>();
+        for (String token : value.split(",")) {
+            String t = token.trim().toLowerCase(Locale.ROOT);
+            if (t.isEmpty()) {
+                continue;
             }
-            return all;
+            if ("all".equals(t)) {
+                for (int q = 1; q <= 22; q++) {
+                    names.add(String.format(Locale.ROOT, "q%02d", q));
+                }
+            } else if ("probes".equals(t)) {
+                for (int p = 1; p <= PROBES; p++) {
+                    names.add(String.format(Locale.ROOT, "p%02d", p));
+                }
+            } else if (t.startsWith("p") || t.startsWith("q")) {
+                names.add(String.format(Locale.ROOT, "%c%02d", t.charAt(0), Integer.parseInt(t.substring(1))));
+            } else {
+                names.add(String.format(Locale.ROOT, "q%02d", Integer.parseInt(t)));
+            }
         }
-        return Arrays.stream(value.split(",")).map(String::trim).filter(s -> !s.isEmpty())
-                .map(Integer::valueOf).collect(Collectors.toList());
+        return names;
     }
 
     /**
      * Loads a query text from the test resources.
      *
-     * @param q query number
+     * @param name query name ({@code qNN} TPC-H, {@code pNN} probe)
      * @return SQL text
      * @throws IOException when the resource cannot be read
      */
-    private static String query(int q) throws IOException {
-        String name = String.format(Locale.ROOT, "/tpch-queries/q%02d.sql", q);
-        try (InputStream in = Objects.requireNonNull(TpchPerfTest.class.getResourceAsStream(name), name)) {
+    private static String query(String name) throws IOException {
+        String resource = "/tpch-queries/" + name + ".sql";
+        try (InputStream in = Objects.requireNonNull(TpchPerfTest.class.getResourceAsStream(resource), resource)) {
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
