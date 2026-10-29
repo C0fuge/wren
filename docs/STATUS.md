@@ -50,16 +50,20 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         (`FlightLikePushdown`, see Log: 1.46x -> 0.75x of direct). Q5 plan fixed 2026-10-29 (`statistics.columnWidth`,
         see Log): Flight and direct plans now have the same joins. Decimal/null read path 2026-10-29 (see Log):
         local SF1 Q5 1.87x -> 1.42x, Q3 1.37x -> 1.07x; CI Perf run 40806272377: all 22 at 0.79x of direct, Q5 1.28x,
-        Q11 1.51x (277 vs 418 ms). Q5's remaining gap explained 2026-10-29
-        (see Log): not the stream (probe `p01` = bare `lineitem` stream at or below direct) but parallelism — the
-        server's default `endpointsPerServer=1` gives every Flight scan one Spark task per server node, so Q5's
-        shuffle of `lineitem` runs on one core (direct Parquet: 4 tasks). With `ENDPOINTS_PER_SERVER=4` Q5 is at
-        or below direct. Next session starts here: (i) read the CI Perf runs of this session (Log) and (ii)
-        make it the connector's job too, since a production cluster with N nodes still gives a big table only N
-        Spark partitions however many executor cores there are: try the existing `partition.byColumn` +
-        `partition.size` (+ `lowerBound`/`upperBound`) on `lineitem`/`orders` in `TpchPerfTest` (e.g. a
-        `perf.flight.options` system property) and compare with `ENDPOINTS_PER_SERVER`; then decide whether to
-        propose a server default (Open questions) or a connector default (e.g. split by the reported row count);
+        Q11 1.51x (277 vs 418 ms). Q5's remaining gap measured 2026-10-29 with probe
+        scans (`QUERIES=probes`, see Log): two causes. (1) Parallelism: the server's default `endpointsPerServer=1`
+        gives every Flight scan one Spark task per server node (direct Parquet: 4 at SF1), so Q5's shuffle of
+        `lineitem` runs on one core; `ENDPOINTS_PER_SERVER=4` fixes that (local Q5 1.33x -> 0.94x; CI all 22 at
+        0.72x of direct, Q5 0.99x, Q11 0.84x). (2) The bare stream itself: probes `p01` (Q5's 4 `lineitem` columns)
+        and `p03` (all 16) still take 1.3-1.6x of direct on CI runners, with 1 or 4 endpoints (local runs are
+        noisier: 0.76-2.07x). Next session starts here: (i) JFR of `p01`/`p03` on both JVMs
+        (`TEST_JVM_OPTIONS="-XX:StartFlightRecording=..."`, server line in `scripts/perf/tpch.sh`) with
+        `ENDPOINTS_PER_SERVER=4` to find the per-row cost (candidates from the last Q5 JFR: gRPC stream handoff
+        `LockSupport.unpark`, `ArrowBuf` bound checks -> try `-Darrow.enable_unsafe_memory_access=true` on the
+        client, string columns for `p03`); (ii) then the connector side of (1), since a cluster with N nodes still
+        gives a big table only N Spark partitions: try `partition.byColumn` + `partition.size` (+ bounds) on
+        `lineitem` in `TpchPerfTest` (e.g. a `perf.flight.options` property) against `ENDPOINTS_PER_SERVER`, then
+        propose a server default (Open questions) or a connector default;
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -72,7 +76,8 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
 - For the maintainer / server (found 2026-10-29 by S5 a): each Flight scan gets one Spark task per server node
   (kestrel's default `arrowflight.cluster.endpointsPerServer` / `FLIGHT_ENDPOINTS_PER_SERVER` = 1), so a big table
   is read, and its rows shuffled, by as many Spark tasks as there are server nodes, whatever the executor count.
-  Locally (SF1, 4 cores) Q5 went from 1.33x of direct Parquet to 0.94x with 4 endpoints per server. What is the
+  Locally (SF1, 4 cores) Q5 went from 1.33x of direct Parquet to 0.94x with 4 endpoints per server; CI Perf run
+  40813359695 (4 endpoints): all 22 queries at 0.72x of direct (run 40806272377 with 1: 0.79x). What is the
   setting on the production servers? A higher value there (e.g. the node's cores) helps every Spark job without a
   connector change; the connector side (`partition.byColumn`, or a default split) is S5 (a)'s next step.
 
@@ -312,3 +317,16 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   Checkstyle 0, SpotBugs 0. CI run 40806257438 green (4 jobs); Perf run 40806272377 (SF1, ANSI on, parquet/flight, all 22, rows equal,
   first CI run with `-Xmx8g` actually applied; median ms direct/Flight): total 20806/16503 (0.79x); still slower Q5
   1271/1630 (1.28x; Perf run 40802602269 had 1.55x), Q11 1.51x (small: 277/418), Q8 1.16x, Q4 1.11x, Q18 1.10x. Lock commit carries a `Co-Authored-By` trailer by mistake (no rewrite of `main`); later commits none.
+- 2026-10-29 (session): S5 (a) Q5 gap measured. `TpchPerfTest` runs probe scans besides TPC-H (`perf.queries` /
+  `QUERIES`: `probes` or `p1,...`; query names `qNN`/`pNN` in `times.csv`, `summary.md`, `plans/`):
+  `p01` = Q5's four `lineitem` columns, `p02` = the same repartitioned by `l_orderkey`, `p03` = all 16 columns,
+  each folded by `sum(hash(...))` (never pushed). Plan files now end with the task count of every stage of the first
+  run (`stage tasks (id:tasks): ...`). `scripts/perf/tpch.sh` takes `ENDPOINTS_PER_SERVER` (the server's
+  `FLIGHT_ENDPOINTS_PER_SERVER`), workflow `Perf` input `endpoints_per_server`. Finding: every Flight scan had 1
+  Spark task (server default 1 endpoint per node; direct Parquet 4), so shuffles after a Flight scan ran on one
+  core. Local SF1 (ANSI on, median of 3) default -> 4 endpoints: Q5 1.33x -> 0.94x of direct, p02 1.94x -> 1.05x.
+  CI Perf run 40813359695 (4 endpoints, all 22 + probes, rows equal): total 32037/22943 ms direct/Flight (0.72x;
+  slower runner than run 40806272377), Q5 0.99x, Q11 0.84x, slowest Q9 1.06x, Q8 1.02x; probes p01 1.28x, p02 1.15x,
+  p03 1.57x. CI Perf run 40813369789 (default 1 endpoint, probes + Q5): p01 1.63x, p02 1.39x, p03 1.49x, Q5 1.01x.
+  So the bare stream is still slower than direct Parquet (next step). Tests: `TpchPerfHelpersTest` (query
+  selection, stage task line). CI runs 40812658617 and 40813350841 green (4 jobs each).
