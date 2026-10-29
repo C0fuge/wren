@@ -67,12 +67,11 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         40820294049 (1 endpoint, range splits of `lineitem`/`orders`): all 22 at 0.80x of direct, p02 1.18x (as with
         4 endpoints). README section "Parallelism" done 2026-10-29 (see Log), with a fix found on the way: range splits
         dropped rows outside the bounds and null keys, and repeated slices for narrow bounds (`CoveringRangeSplit`).
-        Write-path errors serializable too (same day, see Log). Next session starts here: S5 (b), then (c).
+        Write-path errors serializable too (same day, see Log).
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
-    (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
-        comparison (numbers compared by value) but worth one line in the report;
-    (c) optionally SF10 (`sf` input; runner disk/heap permitting) and a run with `partition.size`/result-mode
+    (b) JDBC baseline types in the report: done 2026-10-29 (see Log).
+    (c) Next session starts here. Optionally SF10 (`sf` input; runner disk/heap permitting) and a run with `partition.size`/result-mode
         variations.
 
 ## Open questions
