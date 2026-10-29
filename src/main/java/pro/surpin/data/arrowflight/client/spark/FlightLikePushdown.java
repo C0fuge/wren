@@ -146,13 +146,12 @@ public final class FlightLikePushdown extends Rule<LogicalPlan> {
         }
         List<String> keptNames = kept.size() == output.size() ? null
                 : kept.stream().map(AttributeReference::name).toList();
+        // The narrower node is built before the scan changes, so a failure leaves plan and scan as they were.
+        LogicalPlan child = keptNames == null ? relation : withOutput(relation, kept);
         if (!scan.pushConditions(conditions, keptNames)) {
             return filter;
         }
         LOGGER.debug("Pushed {} LIKE conditions to the Flight scan of {}", conditions.size(), scan.tableName());
-        LogicalPlan child = keptNames == null ? relation : new DataSourceV2ScanRelation(relation.relation(), scan,
-                JavaConverters.asScalaBufferConverter(kept).asScala().toList(), relation.keyGroupedPartitioning(),
-                relation.ordering());
         if (remaining.isEmpty()) {
             return child;
         }
@@ -161,6 +160,23 @@ public final class FlightLikePushdown extends Rule<LogicalPlan> {
             condition = new And(condition, conjunct);
         }
         return new Filter(condition, child);
+    }
+
+    /**
+     * Copies a scan relation with other output columns. The constructor's other parameters differ between Spark
+     * versions (3.3 has no ordering), so the copy goes through the node's own fields.
+     *
+     * @param relation the scan relation
+     * @param output the new output, a subset of the relation's
+     * @return the copy
+     */
+    private static LogicalPlan withOutput(DataSourceV2ScanRelation relation, List<AttributeReference> output) {
+        Object[] fields = new Object[relation.productArity()];
+        for (int i = 0; i < fields.length; i++) {
+            fields[i] = relation.productElement(i);
+        }
+        fields[2] = JavaConverters.asScalaBufferConverter(output).asScala().toList(); // (relation, scan, output, ...)
+        return relation.makeCopy(fields);
     }
 
     private static void splitConjuncts(Expression expression, List<Expression> out) {
