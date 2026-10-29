@@ -8,6 +8,7 @@ import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -100,5 +101,12 @@ class TpchPerfHelpersTest {
         assertTrue(md.contains("| q01 | 200 | 100 | 0.50 |"), md);
         assertTrue(md.contains("| q06 | 50 | failed | - |"), md);
         assertTrue(md.contains("| total | 250 | 100 | 0.40 |"), md);
+    }
+
+    /** Stage task counts are listed in stage order. */
+    @Test
+    void stageTaskLine() {
+        assertEquals("stage tasks (id:tasks): 3:4 12:1", TpchPerfTest.stageTasks(new TreeMap<>(Map.of(12, 1, 3, 4))));
+        assertEquals("stage tasks (id:tasks): ", TpchPerfTest.stageTasks(new TreeMap<>()));
     }
 }

@@ -9,6 +9,7 @@
 #   scripts/install-kestrel.sh && scripts/perf/tpch.sh
 #   SF=1 RUNS=3 MODES=parquet,flight,jdbc QUERIES=all MVN=mvn scripts/perf/tpch.sh
 #   MODES=flight,catalog ANSI=true QUERIES=1 scripts/perf/tpch.sh   # catalog tables; spark.sql.ansi.enabled
+#   ENDPOINTS_PER_SERVER=4 QUERIES=probes,5 scripts/perf/tpch.sh  # server splits a scan into 4 endpoints
 #
 # Needs JDK 21, python3 with pip (tpchgen-cli), and scripts/install-kestrel.sh run before (its checkout in
 # .kestrel). Extra test JVM options for Spark: TEST_JVM_OPTIONS (e.g. -Xmx8g).
@@ -26,6 +27,9 @@ kestrel="${KESTREL_DIR:-$root/.kestrel}"
 out="${OUT:-$root/target/perf}"
 data="${DATA:-$root/target/tpch-sf$sf}"
 server_heap="${SERVER_HEAP:-4g}"
+# Endpoints per node and query of the server (its FLIGHT_ENDPOINTS_PER_SERVER, default 1): the Spark partitions of
+# a scan with one server process. Empty: the server's setting.
+endpoints="${ENDPOINTS_PER_SERVER:-${FLIGHT_ENDPOINTS_PER_SERVER:-}}"
 
 [ -d "$kestrel/flight-server" ] || { echo "no server checkout in $kestrel: run scripts/install-kestrel.sh" >&2; exit 1; }
 mkdir -p "$out"
@@ -45,9 +49,10 @@ if [ -z "$jar" ] || [ ! -d "$kestrel/flight-server/target/libs" ]; then
   jar="$(ls "$kestrel"/flight-server/target/arrow-flight-server-*-shaded.jar | head -1)"
 fi
 echo "server jar: $jar (kestrel $(git -C "$kestrel" rev-parse HEAD))" | tee "$out/server.txt"
+echo "endpoints per server: ${endpoints:-server default}" | tee -a "$out/server.txt"
 
 # No TLS and no authentication: a local benchmark only. Netty (Arrow's allocator) needs java.nio opened.
-FLIGHT_ALLOW_INSECURE=true java "-Xmx$server_heap" \
+FLIGHT_ALLOW_INSECURE=true env ${endpoints:+FLIGHT_ENDPOINTS_PER_SERVER=$endpoints} java "-Xmx$server_heap" \
   --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   -Dio.netty.tryReflectionSetAccessible=true \
   -cp "$jar:$kestrel/flight-server/target/libs/*" pro.surpin.data.arrowflight.server.HadoopArrowFlightServer \

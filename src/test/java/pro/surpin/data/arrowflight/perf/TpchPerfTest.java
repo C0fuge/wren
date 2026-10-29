@@ -2,6 +2,8 @@ package pro.surpin.data.arrowflight.perf;
 
 import pro.surpin.data.arrowflight.client.spark.FlightCatalog;
 
+import org.apache.spark.scheduler.SparkListener;
+import org.apache.spark.scheduler.SparkListenerStageCompleted;
 import org.apache.spark.sql.DataFrameReader;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -26,6 +28,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * perf.out} (target/perf).
  *
  * <p>Writes {@code times.csv} (every run), {@code summary.md} (median per query and mode, totals, ratios),
- * {@code env.txt}, {@code plans/<mode>/qNN.txt} (executed plans) and {@code errors.txt}. Every mode's rows are
+ * {@code env.txt}, {@code plans/<mode>/qNN.txt} (executed plans and the task count of every stage of the first run) and {@code errors.txt}. Every mode's rows are
  * compared with the Parquet reference; a mismatch or failure fails the test after all queries ran.
  */
 @Tag("perf")
@@ -75,9 +80,10 @@ class TpchPerfTest {
      * Runs the selected TPC-H queries in every mode and writes the result files.
      *
      * @throws IOException when a query or result file cannot be read or written
+     * @throws TimeoutException when Spark's listener bus does not drain after a query
      */
     @Test
-    void tpch() throws IOException {
+    void tpch() throws IOException, TimeoutException {
         String data = System.getProperty("perf.tpch.data");
         Assumptions.assumeTrue(data != null && !data.isBlank(), "perf.tpch.data not set");
         Path tpch = Path.of(data).toAbsolutePath().resolve("tpch");
@@ -107,6 +113,8 @@ class TpchPerfTest {
         }
         SparkSession spark = builder.getOrCreate();
         spark.sparkContext().setLogLevel("WARN");
+        StageTasks stages = new StageTasks();
+        spark.sparkContext().addSparkListener(stages);
 
         StringBuilder csv = new StringBuilder("mode,query,run,millis,rows\n");
         StringBuilder errors = new StringBuilder();
@@ -130,6 +138,7 @@ class TpchPerfTest {
                     try {
                         List<List<Object>> rows = null;
                         for (int run = 0; run < runs; run++) {
+                            stages.clear();
                             long t0 = System.nanoTime();
                             Dataset<Row> frame = spark.sql(sql);
                             List<Row> result = frame.collectAsList();
@@ -138,8 +147,10 @@ class TpchPerfTest {
                                     mode, q, run + 1, millis[run], result.size()));
                             if (run == 0) {
                                 rows = canonical(result);
+                                spark.sparkContext().listenerBus().waitUntilEmpty();
                                 Files.writeString(plans.resolve(q + ".txt"),
-                                        frame.queryExecution().executedPlan().toString());
+                                        frame.queryExecution().executedPlan().toString() + "\n"
+                                                + stageTasks(stages.tasks()) + "\n");
                             }
                         }
                         modeTimes.put(q, millis);
@@ -564,5 +575,42 @@ class TpchPerfTest {
      */
     private static String schema() {
         return System.getProperty("perf.flight.schema", "tpch");
+    }
+
+    /**
+     * One line with the task count of each completed stage, in stage order: for a scan stage the number of
+     * input partitions (Flight endpoints, Parquet splits), for a stage after a shuffle its partitions.
+     *
+     * @param tasks task count per stage id
+     * @return e.g. {@code stage tasks (id:tasks): 3:4 4:8}
+     */
+    static String stageTasks(SortedMap<Integer, Integer> tasks) {
+        return tasks.entrySet().stream().map(e -> e.getKey() + ":" + e.getValue())
+                .collect(Collectors.joining(" ", "stage tasks (id:tasks): ", ""));
+    }
+
+    /** Records the task count of every completed stage (reset before each run). */
+    private static final class StageTasks extends SparkListener {
+
+        private final SortedMap<Integer, Integer> tasks = new TreeMap<>();
+
+        @Override
+        public synchronized void onStageCompleted(SparkListenerStageCompleted completed) {
+            tasks.put(completed.stageInfo().stageId(), completed.stageInfo().numTasks());
+        }
+
+        /** Forgets the stages recorded so far. */
+        synchronized void clear() {
+            tasks.clear();
+        }
+
+        /**
+         * The stages recorded since the last {@link #clear()}.
+         *
+         * @return task count per stage id
+         */
+        synchronized SortedMap<Integer, Integer> tasks() {
+            return new TreeMap<>(tasks);
+        }
     }
 }

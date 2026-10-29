@@ -27,6 +27,10 @@ on:
         description: "spark.sql.ansi.enabled for every mode (true/false; empty: Spark's default)"
         type: string
         default: ""
+      endpoints_per_server:
+        description: "Server endpoints per node and query (FLIGHT_ENDPOINTS_PER_SERVER; empty: server default)"
+        type: string
+        default: ""
       kestrel_ref:
         description: "Server repository commit/branch (default: kestrel.ref)"
         type: string
@@ -72,6 +76,7 @@ jobs:
           MODES: ${{ inputs.modes }}
           QUERIES: ${{ inputs.queries }}
           ANSI: ${{ inputs.ansi }}
+          ENDPOINTS_PER_SERVER: ${{ inputs.endpoints_per_server }}
           OUT: ${{ github.workspace }}/target/perf
           TEST_JVM_OPTIONS: -Xmx8g
         run: |
