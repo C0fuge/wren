@@ -1,5 +1,6 @@
 package pro.surpin.data.arrowflight.client.spark.write;
 
+import pro.surpin.data.arrowflight.client.spark.read.SerializableErrors;
 import pro.surpin.data.arrowflight.client.write.WriteProtocol;
 import pro.surpin.data.arrowflight.client.Configuration;
 import pro.surpin.data.arrowflight.client.spark.security.FlightSessionTokens;
@@ -68,7 +69,12 @@ public final class FlightDataWriterFactory implements DataWriterFactory, Streami
      */
     @Override
     public DataWriter<InternalRow> createWriter(int partitionId, long taskId) {
-        return new FlightDataWriter(partitionId, taskId, this.configuration, this.stmt, this.dataSchema, this.protocol, this.batchSize);
+        try {
+            return new FlightDataWriter(partitionId, taskId, this.configuration, this.stmt, this.dataSchema, this.protocol, this.batchSize);
+        } catch (RuntimeException e) {
+            // Flight errors (e.g. a rejected prepared statement) must reach the driver serializable
+            throw SerializableErrors.asRuntimeException(e);
+        }
     }
 
     /**
@@ -80,6 +86,11 @@ public final class FlightDataWriterFactory implements DataWriterFactory, Streami
      */
     @Override
     public DataWriter<InternalRow> createWriter(int partitionId, long taskId, long epochId) {
-        return new FlightDataWriter(partitionId, taskId, epochId, this.configuration, this.stmt, this.dataSchema, this.protocol, this.batchSize);
+        try {
+            return new FlightDataWriter(partitionId, taskId, epochId, this.configuration, this.stmt, this.dataSchema, this.protocol, this.batchSize);
+        } catch (RuntimeException e) {
+            // Flight errors (e.g. a rejected prepared statement) must reach the driver serializable
+            throw SerializableErrors.asRuntimeException(e);
+        }
     }
 }

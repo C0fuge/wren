@@ -6,12 +6,12 @@ import java.io.IOException;
 import java.io.Serial;
 
 /**
- * Makes read errors safe to ship from an executor to the driver. Arrow's {@link FlightRuntimeException} holds a
+ * Makes read and write errors safe to ship from an executor to the driver. Arrow's {@link FlightRuntimeException} holds a
  * {@code CallStatus}, which is not {@code Serializable}, so a task failing with it (directly or as a cause) cannot
  * be serialized: Spark then reports the failure without its exception, or, where its serialization debugger cannot
  * run (JVMs without spark-submit's {@code --add-opens}), the task thread dies and the job hangs.
  */
-final class SerializableErrors {
+public final class SerializableErrors {
 
     private SerializableErrors() {
     }
@@ -43,18 +43,18 @@ final class SerializableErrors {
      * @param error error thrown by the Flight stream
      * @return the error to throw
      */
-    static IOException asIOException(IOException error) {
+    public static IOException asIOException(IOException error) {
         Throwable converted = serializable(error);
         return converted instanceof IOException io ? io : new IOException(converted.getMessage(), converted);
     }
 
     /**
-     * Converts an unchecked error thrown while opening or reading a stream.
+     * Converts an unchecked error thrown while opening or reading a stream, or while writing rows.
      *
      * @param error error thrown by the Flight stream
      * @return the error to throw
      */
-    static RuntimeException asRuntimeException(RuntimeException error) {
+    public static RuntimeException asRuntimeException(RuntimeException error) {
         if (!hasFlightError(error)) {
             return error;
         }

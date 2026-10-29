@@ -3,6 +3,7 @@ package pro.surpin.data.arrowflight.client.spark.write;
 import pro.surpin.data.arrowflight.client.model.ArrowConversion;
 import pro.surpin.data.arrowflight.client.Client;
 import pro.surpin.data.arrowflight.client.Configuration;
+import pro.surpin.data.arrowflight.client.spark.read.SerializableErrors;
 import pro.surpin.data.arrowflight.client.spark.security.FlightSessionTokens;
 import pro.surpin.data.arrowflight.client.write.WriteProtocol;
 import pro.surpin.data.arrowflight.client.write.WriteStatement;
@@ -117,7 +118,11 @@ public final class FlightDataWriter implements DataWriter<InternalRow> {
     public void write(InternalRow row) throws IOException {
         this.rows.add(row.copy());
         if (this.rows.size() > this.batchSize) {
-            this.write(this.rows.toArray(new InternalRow[0]));
+            try {
+                this.write(this.rows.toArray(new InternalRow[0]));
+            } catch (RuntimeException e) {
+                throw SerializableErrors.asRuntimeException(e);
+            }
             this.rows.clear();
         }
     }
@@ -151,7 +156,11 @@ public final class FlightDataWriter implements DataWriter<InternalRow> {
     public WriterCommitMessage commit() {
         //write any left-over
         if (this.rows.size() > 0) {
-            this.write(this.rows.toArray(new InternalRow[0]));
+            try {
+                this.write(this.rows.toArray(new InternalRow[0]));
+            } catch (RuntimeException e) {
+                throw SerializableErrors.asRuntimeException(e);
+            }
             this.rows.clear();
         }
 

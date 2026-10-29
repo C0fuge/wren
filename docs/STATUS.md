@@ -67,10 +67,7 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         40820294049 (1 endpoint, range splits of `lineitem`/`orders`): all 22 at 0.80x of direct, p02 1.18x (as with
         4 endpoints). README section "Parallelism" done 2026-10-29 (see Log), with a fix found on the way: range splits
         dropped rows outside the bounds and null keys, and repeated slices for narrow bounds (`CoveringRangeSplit`).
-        Next session starts here: the write-path follow-up below (small, finished in one session), then S5 (b)/(c).
-        Write path (next): `FlightDataWriter` / `FlightDataWriterFactory` can also pass Flight exceptions to Spark;
-        route them through `SerializableErrors` too, with a Spark test of a rejected write (e.g. a write into a
-        table the server refuses) that fails the job with the server's message instead of hanging.
+        Write-path errors serializable too (same day, see Log). Next session starts here: S5 (b), then (c).
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -380,3 +377,16 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   1.06x; probes p01 1.65x, p02 1.18x (1 endpoint, run 40813369789: 1.39x; 4 endpoints, run 40813359695: 1.15x), p03
   1.59x.
   The lock commit carries a `Co-Authored-By` trailer by mistake (no rewrite of `main`); later commits none.
+- 2026-10-29 (session): S5 (a) — README section "Parallelism" (one task per endpoint, `endpointsPerServer`, range
+  splits, `partition.predicates`, hash split broken). Writing it turned up a correctness bug in range splits: the
+  client core's `PartitionBehavior` builds `lo <= c and c < hi` slices over `[lowerBound, upperBound)`, so rows
+  outside the bounds and null keys were dropped silently, and bounds narrower than `partition.size` values repeated
+  the same `c = v` slice (duplicate rows). New `CoveringRangeSplit` (subclass used by `FlightTable`) keeps the core's
+  edges (type parsing unchanged) and rewrites the slices: first `c < e1 or c is null`, last `c >= ek`, equal edges
+  collapsed (Open questions, FYI). Also the follow-up of the read fix: `FlightDataWriterFactory.createWriter` and
+  `FlightDataWriter.write/commit` route Flight errors through `SerializableErrors` (now public); before, a write the
+  server rejected failed the job with the message only (cause lost). Tests: `CoveringRangeSplitTest` (6),
+  `SparkRangeSplitTest` (5; long/double/date bounds, narrow bounds, filter; 4 failed before the fix),
+  `SparkFlightWriteErrorTest` (append into a read-only Parquet table; failed before the fix). Local `verify`
+  (system `mvn`): 271 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0. CI runs 40824540477 (range split, README)
+  green;
