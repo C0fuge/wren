@@ -88,6 +88,12 @@ class SparkRuntimeFilterTest {
         Dataset<Row> joined = big.join(small, big.col("id").equalTo(small.col("sid"))).select("id", "string_col")
                 .orderBy("id");
         List<Row> rows = joined.collectAsList();
+        // Query listeners (FlightAqeGuard restores AQE in one) run asynchronously on Spark's listener bus.
+        try {
+            spark.sparkContext().listenerBus().waitUntilEmpty();
+        } catch (Exception e) { // TimeoutException, declared through Scala's @throws
+            throw new IllegalStateException("Spark's listener bus did not drain", e);
+        }
         return new Result(rows, joined.queryExecution().executedPlan().toString().toLowerCase(java.util.Locale.ROOT));
     }
 
