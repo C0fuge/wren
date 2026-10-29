@@ -173,8 +173,9 @@ class TpchPerfTest {
         } finally {
             Files.writeString(out.resolve("times.csv"), csv);
             Files.writeString(out.resolve("errors.txt"), errors);
-            Files.writeString(out.resolve("summary.md"), summary(times, queries, runs)
-                    + typeDifferences(columnTypes));
+            String typeNotes = typeDifferences(columnTypes);
+            System.out.print(typeNotes);
+            Files.writeString(out.resolve("summary.md"), summary(times, queries, runs) + typeNotes);
             Files.writeString(out.resolve("env.txt"), String.join("\n",
                     "date=" + Instant.now(),
                     "spark=" + spark.version(),
