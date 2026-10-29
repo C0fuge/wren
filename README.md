@@ -91,7 +91,10 @@ SELECT l_returnflag, count(*) FROM flight.tpch.lineitem GROUP BY l_returnflag;
 ## Scan statistics
 
 Each scan reports the server's size estimate (Parquet input bytes and rows) to Spark; a pushed global aggregate
-reports one row. With `statistics.filterSelectivity=true` (default `false`) the estimate is also scaled by the share
+reports one row. The server's bytes cover whole Parquet files, so a scan that reads only some columns reports their
+share of the row width (Spark's default type sizes, as Spark estimates its own Parquet relation under a projection):
+a narrow dimension table can then be broadcast as when Spark reads the files directly. `statistics.columnWidth=false`
+(default `true`) reports the whole files as before. With `statistics.filterSelectivity=true` (default `false`) the estimate is also scaled by the share
 of rows the pushed filters keep, so Spark can broadcast a filtered table. For a plain `schema.table` source the
 connector asks the server's `arrowflight.table_statistics` action for the filtered columns (footer bounds, null
 counts, distinct counts when the server has them): a range filter then keeps its share of the value range, a value

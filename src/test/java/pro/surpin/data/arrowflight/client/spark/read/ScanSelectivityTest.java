@@ -128,6 +128,24 @@ class ScanSelectivityTest {
         }
     }
 
+    /** Verifies the width share reaches the table only when enabled and never for a pushed aggregation. */
+    @Test
+    void builderAppliesColumnWidthOnlyWhenEnabled() {
+        org.apache.spark.sql.types.StructType schema = new org.apache.spark.sql.types.StructType()
+                .add("id", DataTypes.LongType).add("name", DataTypes.StringType);
+        for (boolean enabled : new boolean[]{false, true}) {
+            Table table = mock(Table.class);
+            when(table.getSparkSchema()).thenReturn(schema);
+            FlightScanBuilder builder = new FlightScanBuilder(mock(Configuration.class), table,
+                    new PartitionBehavior(null, null, 1, null, null, null), false, enabled);
+            builder.pruneColumns(new org.apache.spark.sql.types.StructType().add("id", DataTypes.LongType));
+
+            builder.build();
+
+            verify(table).setPushdownWidth(enabled ? 16.0 / 36.0 : 1.0);
+        }
+    }
+
     /** Statistics of {@code id} in [0, 100] with 5 nulls in 200 rows and no distinct count, as kestrel sends. */
     private static ServerColumnStatistics.Answer idStats(Long ndv) {
         return new ServerColumnStatistics.Answer(200,

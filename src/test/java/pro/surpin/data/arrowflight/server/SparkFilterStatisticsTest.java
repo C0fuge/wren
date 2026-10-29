@@ -94,4 +94,48 @@ class SparkFilterStatisticsTest {
     void withoutTheOptionTheScanKeepsTheTableEstimate() {
         assertEquals(1000L, scanRows(table(false).where("id > 1000000")));
     }
+
+    private static Dataset<Row> table(String columnWidth) {
+        return spark.read().format("flight")
+                .option("host", "localhost")
+                .option("port", String.valueOf(helper.location.getUri().getPort()))
+                .option("user", "test").option("password", "test")
+                .option("table", "test_schema.test_table")
+                .option("statistics.columnWidth", columnWidth)
+                .load();
+    }
+
+    /** Bytes Spark estimates for a plan. */
+    private static long bytes(Dataset<Row> df) {
+        return df.queryExecution().optimizedPlan().stats().sizeInBytes().longValue();
+    }
+
+    @Test
+    void prunedScanReportsItsShareOfTheRowWidth() {
+        Dataset<Row> all = table("true");
+        long full = bytes(all);
+        assertTrue(full > 1, "server reports the file bytes: " + full);
+        double share = pro.surpin.data.arrowflight.client.model.Table.widthShare(
+                new org.apache.spark.sql.types.StructField[]{all.schema().apply("id")}, all.schema().fields());
+        assertTrue(share < 1.0, "one column of " + all.schema().size());
+        assertEquals(Math.round(full * share), bytes(table("true").select("id")));
+        // Opt-out: the whole files, as before.
+        assertEquals(full, bytes(table("false").select("id")));
+
+        // Between the two sizes, only the pruned scan is broadcast (TPC-H Q5's customer at SF1).
+        String threshold = spark.conf().get("spark.sql.autoBroadcastJoinThreshold");
+        spark.conf().set("spark.sql.autoBroadcastJoinThreshold", String.valueOf((full + bytes(table("true")
+                .select("id"))) / 2));
+        try {
+            for (String width : new String[]{"true", "false"}) {
+                Dataset<Row> joined = table("false").as("a")
+                        .join(table(width).select("id").as("b"), "id");
+                String plan = joined.queryExecution().executedPlan().toString();
+                assertEquals("true".equals(width), plan.contains("BroadcastHashJoin"), width + ": " + plan);
+                assertEquals(1000L, joined.count());
+            }
+        } finally {
+            spark.conf().set("spark.sql.autoBroadcastJoinThreshold", threshold);
+        }
+    }
 }

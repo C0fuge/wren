@@ -23,12 +23,16 @@ import java.util.List;
  * Spark view of a Flight table: keeps the Spark schema and delegates query planning to TableScan.
  */
 public final class Table implements Serializable {
+    //bytes Spark adds per row when it sizes rows (EstimationUtils.getSizePerRow)
+    private static final long ROW_OVERHEAD = 8L;
     private final TableScan scan;
     private StructType sparkSchema;
     //fraction of the server's raw row estimate that the pushed filters keep
     private double pushedSelectivity = 1.0;
     //true when a pushed aggregation has no grouping keys and yields one row
     private boolean pushedGlobalAggregation = false;
+    //share of the table's row width (Spark's default type sizes) that the pruned columns take
+    private double pushedWidth = 1.0;
 
     /**
      * Wraps a scan.
@@ -122,6 +126,46 @@ public final class Table implements Serializable {
     }
 
     /**
+     * Records how column pruning narrows the server's raw byte estimate, which covers whole Parquet files.
+     *
+     * @param width share of the table's row width the read columns take; outside (0, 1] means 1
+     */
+    public void setPushdownWidth(double width) {
+        this.pushedWidth = width > 0.0 && width <= 1.0 ? width : 1.0;
+    }
+
+    /**
+     * Returns the share of a full row that the given columns take, sized as Spark sizes rows without column
+     * statistics (8 bytes per row plus each type's default size), so pruned scans compare with Spark's own
+     * estimate for a Parquet relation under a projection.
+     *
+     * @param read the read columns; empty means every column
+     * @param all the table's columns
+     * @return width share in (0, 1]
+     */
+    public static double widthShare(StructField[] read, StructField[] all) {
+        if (read == null || read.length == 0 || all == null || all.length == 0) {
+            return 1.0;
+        }
+        double share = (double) rowSize(read) / rowSize(all);
+        return share > 0.0 && share < 1.0 ? share : 1.0;
+    }
+
+    /**
+     * Sizes a row as Spark's {@code EstimationUtils.getSizePerRow} does without column statistics.
+     *
+     * @param fields columns
+     * @return estimated bytes per row
+     */
+    private static long rowSize(StructField[] fields) {
+        long size = ROW_OVERHEAD;
+        for (StructField field : fields) {
+            size += field.dataType().defaultSize();
+        }
+        return size;
+    }
+
+    /**
      * Scales the server's raw row estimate by the pushdown hints.
      *
      * @param rawRows raw input rows, or negative when unknown
@@ -148,11 +192,13 @@ public final class Table implements Serializable {
         if (rawBytes < 0) {
             return rawBytes;
         }
-        if (rawRows <= 0) {
+        // A global aggregate's single row is not a share of the table's columns.
+        double width = this.pushedGlobalAggregation ? 1.0 : this.pushedWidth;
+        double fraction = rawRows <= 0 ? 1.0 : Math.min(1.0, (double) estimateOutputRows(rawRows) / rawRows);
+        if (fraction * width >= 1.0) {
             return rawBytes;
         }
-        double fraction = Math.min(1.0, (double) estimateOutputRows(rawRows) / rawRows);
-        return Math.max(1L, Math.round(rawBytes * fraction));
+        return Math.max(1L, Math.round(rawBytes * fraction * width));
     }
 
     /**

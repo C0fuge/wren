@@ -381,4 +381,42 @@ class TableTest {
         t.setPushdownEstimate(0.1, true);
         assertEquals(1000L, t.newScan().estimateOutputRows(1000L));
     }
+
+    /** Verifies the width share sizes rows as Spark does (8 bytes plus default sizes) and ignores no pruning. */
+    @Test
+    void widthShareFollowsSparkRowSizes() {
+        org.apache.spark.sql.types.StructField id = new org.apache.spark.sql.types.StructField("id",
+                org.apache.spark.sql.types.DataTypes.LongType, true,
+                org.apache.spark.sql.types.Metadata.empty());
+        org.apache.spark.sql.types.StructField name = new org.apache.spark.sql.types.StructField("name",
+                org.apache.spark.sql.types.DataTypes.StringType, true,
+                org.apache.spark.sql.types.Metadata.empty());
+        org.apache.spark.sql.types.StructField[] all = {id, name};
+        // (8 + 8) / (8 + 8 + 20)
+        assertEquals(16.0 / 36.0, Table.widthShare(new org.apache.spark.sql.types.StructField[]{id}, all), 1e-9);
+        assertEquals(1.0, Table.widthShare(all, all), 1e-9);
+        assertEquals(1.0, Table.widthShare(new org.apache.spark.sql.types.StructField[0], all), 1e-9);
+        assertEquals(1.0, Table.widthShare(null, all), 1e-9);
+    }
+
+    /** Verifies the width share narrows bytes (not rows), combines with selectivity and skips global aggregates. */
+    @Test
+    void estimatesScaleBytesByWidth() {
+        Table t = newTable();
+        t.setPushdownWidth(0.25);
+        assertEquals(1000L, t.estimateOutputRows(1000L));
+        assertEquals(2000L, t.estimateOutputBytes(8000L, 1000L));
+        assertEquals(2000L, t.estimateOutputBytes(8000L, -1L));
+        t.setPushdownEstimate(0.5, false);
+        assertEquals(1000L, t.estimateOutputBytes(8000L, 1000L));
+        t.setPushdownEstimate(1.0, true);
+        assertEquals(8L, t.estimateOutputBytes(8000L, 1000L));
+        t.setPushdownEstimate(1.0, false);
+        t.setPushdownWidth(0.0);
+        assertEquals(8000L, t.estimateOutputBytes(8000L, 1000L));
+        t.setPushdownWidth(Double.NaN);
+        assertEquals(8000L, t.estimateOutputBytes(8000L, 1000L));
+        t.setPushdownWidth(0.5);
+        assertEquals(1000L, t.newScan().estimateOutputBytes(1000L, 10L));
+    }
 }

@@ -47,6 +47,8 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
     private final PartitionBehavior partitionBehavior;
     //whether the reported scan size is scaled by the estimated filter selectivity
     private final boolean filterSelectivityEstimate;
+    //whether the reported scan size is narrowed to the share of the row width the read columns take
+    private final boolean columnWidthEstimate;
 
     //the pushed-down filters
     private Filter[] pdFilters = new Filter[0];
@@ -79,11 +81,25 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
      */
     public FlightScanBuilder(Configuration configuration, Table table, PartitionBehavior partitionBehavior,
             boolean filterSelectivityEstimate) {
+        this(configuration, table, partitionBehavior, filterSelectivityEstimate, false);
+    }
+
+    /**
+     * Construct a flight-scan builder
+     * @param configuration - the configuration of remote flight-service
+     * @param table - the table instance representing a table in remote flight-service
+     * @param partitionBehavior - the partitioning behavior when loading data from remote flight service
+     * @param filterSelectivityEstimate - scale the reported scan size by the estimated selectivity of pushed filters
+     * @param columnWidthEstimate - scale the reported scan size by the share of the row width the read columns take
+     */
+    public FlightScanBuilder(Configuration configuration, Table table, PartitionBehavior partitionBehavior,
+            boolean filterSelectivityEstimate, boolean columnWidthEstimate) {
         LOGGER.debug("{}()", this.getClass().getName());
         this.configuration = configuration;
         this.table = table;
         this.partitionBehavior = partitionBehavior;
         this.filterSelectivityEstimate = filterSelectivityEstimate;
+        this.columnWidthEstimate = columnWidthEstimate;
     }
 
     /**
@@ -286,6 +302,12 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
                 Arrays.toString(Arrays.stream(this.pdColumns)
                         .map(StructField::name).toArray(String[]::new)),
                 this.pdFilters.length, this.pdPredicates.length);
+        // The server's bytes cover whole Parquet files; Spark narrows a Parquet relation under a projection by the
+        // share of the row width the columns take, so a pruned Flight scan reports the same share (not after an
+        // aggregation, whose output columns are not the table's).
+        StructType full = this.table.getSparkSchema();
+        this.table.setPushdownWidth(this.columnWidthEstimate && this.pdAggregation == null && full != null
+                ? Table.widthShare(this.pdColumns, full.fields()) : 1.0);
         this.table.probe(where, this.pdColumns, this.pdAggregation, this.partitionBehavior);
         // The server estimates the raw input; a global aggregate yields one row, and with the
         // opt-in estimate the pushed filters shrink it so Spark can broadcast filtered tables.
