@@ -30,18 +30,13 @@ the shaded jar's name, e.g. `-spark3.5_2.12-shaded.jar`; changes the documented 
 (S3 Spark catalog: done 2026-10-28, see Log. Possible follow-ups, not scheduled: case-insensitive name
 matching, `CREATE TABLE ... AS SELECT` through the catalog, column comments / table statistics in `DESCRIBE`.)
 
-S4. **Upstream ideas.** Upstream github.com/VadimSurpin/arrow-flight-server branch
-    `feat/starrocks-native-integration`, `flight-spark` (compared 2026-10-28 at upstream 1de5f6b). Part 1 done
-    (server column statistics in the filter estimate, see Log). Only (c) remains and it waits on the server:
-    (b) Runtime filtering: done 2026-10-28 (see Log). Possible follow-ups, not scheduled: check whether Spark 4.0
-        still deadlocks without `FlightAqeGuard` (not reproduced here; the guard is installed on both lines);
-        runtime filters on `date` keys.
-    (c) Spark CBO column statistics (`estimateStatistics().columnStats()`, upstream `FlightColumnStatistics.convert`):
-        only useful once the server sends distinct counts (kestrel's action sends `ndv: null`; upstream reports a
-        column only with ndv + min + max, a missing bound makes Spark estimate empty joins). Waits on the server
-        (Open questions).
-    Not portable without server changes (Open questions): runtime bloom filters in the ticket, complete
-    aggregation push-down (`supportCompletePushDown`).
+(S4 Upstream ideas: closed 2026-10-29 in finish mode, see Log. Done: server column statistics in the filter
+estimate (part 1), runtime filtering + `FlightAqeGuard` (b). Not done, waits on the server (Open questions): (c)
+Spark CBO column statistics; runtime bloom filters; complete aggregation push-down. Note for (c) if the server ever
+sends `ndv`: Spark 3.3 has no `org.apache.spark.sql.connector.read.colstats` (added in 3.4), so the 3.3 profile
+needs a separate source set or the profile dropped; report a column only with ndv + min + max as upstream does,
+min/max as Catalyst internal values (dates epoch days as `Integer`, timestamps micros as `Long`).)
+
 (S5 Perf: done 2026-10-29, see Log and README "Performance (TPC-H)". SF10 on a 4-core runner, ANSI on, medians
 of 3: the connector takes 0.79x of direct Parquet's time with range splits in 4 of the five big tables, 0.78x with
 `endpoints_per_server=4`; splits in 8 / 16 are slower on 4 cores (0.85x / 0.95x); the JDBC baseline takes 2.82x of
@@ -50,13 +45,11 @@ asks for `partial` (`Client.callOptions`), and on the one-node Perf server `comp
 `partial` with 1 endpoint (Open questions). Possible follow-ups, not scheduled: Q5/Q8/Q9 stay 1.1-1.3x of direct at
 SF10 with splits (joins of `lineitem` with the shuffled `orders`/`partsupp` side); a run on a multi-node server.)
 
-S6. **Runtime filters on `date` keys** (S4 (b) follow-up): `FlightScan` (`SupportsRuntimeFiltering`) offers only
-    `int`/`bigint` columns to dynamic pruning (`filterAttributes`, `filter()` accepts `Integer`/`Long` IN values).
-    Add `date` columns: check which value class Spark's `In` carries for a date key (`java.sql.Date` or
-    `LocalDate`, depending on `spark.sql.datetime.java8API.enabled`), push an IN list / min-max range of `date`
-    literals, Spark-local test with a date-keyed join (`SparkRuntimeFilterTest`; rows unchanged, filter in the
-    plan). Small; then pick the next unscheduled follow-up (S3: case-insensitive names; S4 (b): Spark 4.0 without
-    `FlightAqeGuard`).
+(S6 Runtime filters on `date` keys: not started, dropped by finish mode (no new items). Unscheduled follow-ups
+listed above stay unscheduled.)
+
+**WREN DONE** (2026-10-29): S1-S5 finished as far as the connector can go; what remains waits on the server or the
+maintainer (Open questions).
 
 ## Open questions
 
@@ -410,3 +403,8 @@ S6. **Runtime filters on `date` keys** (S4 (b) follow-up): `FlightScan` (`Suppor
   `gh api .../logs` redirects to a blob host the session cannot reach. The lock commit again carries
   `Co-Authored-By`/`Claude-Session` trailers by mistake (no rewrite of `main`); later commits none. No code change, so
   no CI run. Next: S6.
+- 2026-10-29 (session): finish mode. S5 was already done (CI run 40828543294 green at e113ba9, Perf runs
+  40843244250 / 40843253331 green). S4 closed: only (c) remained, and it reports nothing until kestrel sends
+  distinct counts (`ndv: null` at `kestrel.ref`); also Spark 3.3 (catalyst 3.3.4) lacks the DSv2 `colstats` API the
+  3.3 profile would need, so no speculative code was added (implementation note under S4). S6 dropped (no new
+  items). No code change, no CI run. WREN DONE.
