@@ -71,8 +71,11 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types in the report: done 2026-10-29 (see Log).
-    (c) Next session starts here. Optionally SF10 (`sf` input; runner disk/heap permitting) and a run with `partition.size`/result-mode
-        variations.
+    (c) SF10 fits a CI runner (2026-10-29, see Log: single runs, rows equal; 0.88x of direct with one task per scan,
+        0.82x with range splits of the five big tables). Next session starts here: SF10 medians (`runs=3`, ~25 min per
+        mode) with range splits and with `endpoints_per_server=4`, plus the JDBC baseline at SF10 (`modes=flight,jdbc`;
+        check it fits the 120 min job timeout with `runs=1` first); then `partition.size` 8/16 and result mode
+        `complete` vs `partial` at SF10, and S5 is done.
 
 ## Open questions
 
@@ -389,3 +392,19 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   `SparkFlightWriteErrorTest` (append into a read-only Parquet table; failed before the fix). Local `verify`
   (system `mvn`): 271 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0. CI runs 40824540477 (range split, README)
   and 40825095038 (write errors) green.
+- 2026-10-29 (session): S5 (b) and first SF10 runs. `TpchPerfTest` records each mode's column types and lists the
+  columns typed differently from the reference, grouped by type change, at the end of `summary.md` and in the test
+  log (`typeDifferences`; README "Performance"). Perf run 40828555240 (SF1, Q6): the connector's types match direct
+  Parquet exactly; the JDBC baseline reads 15 `bigint` keys as `decimal(20,0)`, 4 `int` columns as `bigint` and the
+  9 `decimal(15,2)` money columns as `decimal(38,18)` (Spark JDBC + driver metadata; values compare equal, so the
+  comparison is unaffected, but Spark computes on the wider types). Test: `TpchPerfHelpersTest.typeDifferenceNotes`.
+  Local `verify` (system `mvn`): 272 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0. CI runs 40828070337 and
+  40828543294 green. S5 (c), SF10 (ANSI on, modes parquet/flight, 1 run each, so noisy; all rows equal; runners
+  differ in speed, so only ratios compare): Perf run 40828943403 (1 endpoint, no splits): total 208268/184219 ms
+  direct/Flight (0.88x; without Q1 1.01x), slower Q5 1.67x, Q20 1.59x, Q4 1.27x, Q7 1.24x. Perf run 40829959874 (range
+  splits in 4 of `lineitem`/`orders` on the order key 1..60000001, `partsupp`/`part` on the part key 1..2000001,
+  `customer` 1..1500001): total 283005/232285 (0.82x; without Q1 0.95x), Q5 1.39x, Q11 1.22x, Q8 1.20x, Q9 1.17x,
+  Q20 0.84x. Each SF10 job took ~10-12 min (data generation included). The Perf summary is only in the job's step
+  summary and artifact (the artifact host is not reachable from the session; the per-query `tpch <mode> <query>`
+  lines and now the type notes are in the job log). Lock commit carries a `Co-Authored-By` trailer by mistake (no
+  rewrite of `main`); later commits none.
