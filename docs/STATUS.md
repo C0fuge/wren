@@ -389,4 +389,4 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   `SparkRangeSplitTest` (5; long/double/date bounds, narrow bounds, filter; 4 failed before the fix),
   `SparkFlightWriteErrorTest` (append into a read-only Parquet table; failed before the fix). Local `verify`
   (system `mvn`): 271 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0. CI runs 40824540477 (range split, README)
-  green;
+  and 40825095038 (write errors) green.
