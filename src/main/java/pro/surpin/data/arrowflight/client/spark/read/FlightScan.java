@@ -1,6 +1,7 @@
 package pro.surpin.data.arrowflight.client.spark.read;
 
 import pro.surpin.data.arrowflight.client.Configuration;
+import pro.surpin.data.arrowflight.client.expr.SqlRenderer;
 import pro.surpin.data.arrowflight.client.model.Table;
 import org.apache.spark.sql.connector.expressions.Expressions;
 import org.apache.spark.sql.connector.expressions.NamedReference;
@@ -32,6 +33,10 @@ import java.util.OptionalLong;
  * ({@code spark.flight.retainPushedFilters}), Spark's dynamic pruning may narrow this scan at run time to the join
  * keys it found there: {@link #filter(Filter[])} plans the scan again on the server with an extra WHERE condition.
  * Spark still performs the join, so the server only has to return a superset of the matching rows.
+ *
+ * <p>Conditions Spark cannot translate into connector predicates but the server evaluates exactly (multi-wildcard
+ * {@code LIKE} patterns, see {@code FlightLikePushdown}) are added after Spark's push-down with
+ * {@link #pushConditions(List)}; Spark keeps evaluating them as well.
  */
 public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFiltering, Serializable {
     private static final Logger LOGGER = LoggerFactory.getLogger(FlightScan.class);
@@ -47,14 +52,18 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
 
     private final Configuration configuration;
     private final Table table;
-    // Plans the scan again with extra WHERE conditions; null when runtime filtering is off. Driver-side only.
+    // Plans the scan again with extra WHERE conditions; null for an aggregated scan. Driver-side only.
     private final transient Replanner replanner;
+    // True when Spark's dynamic pruning may narrow the scan (spark.flight.retainPushedFilters is not false).
+    private final boolean runtimeFiltering;
     // True when the pushed predicates were also returned to Spark, which lets Spark prune other scans with them.
     private final boolean retained;
     // True when the scan returns partial aggregates (an aggregation was pushed) instead of rows.
     private final boolean aggregated;
     // WHERE conditions applied by the last runtime filtering, for the plan description and tests.
     private List<String> runtimeConditions = List.of();
+    // WHERE conditions added after Spark's push-down (pushConditions), kept when runtime filters re-plan the scan.
+    private List<String> pushedConditions = List.of();
 
     /** Plans the scan again on the Flight server with extra filter conditions. */
     @FunctionalInterface
@@ -97,6 +106,20 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
      */
     public FlightScan(Configuration configuration, Table table, Replanner replanner, boolean retained,
             boolean aggregated) {
+        this(configuration, table, replanner, retained, aggregated, replanner != null);
+    }
+
+    /**
+     * Construct a FlightScan.
+     * @param configuration - the configuration of remote flight service
+     * @param table - the table object
+     * @param replanner - plans the scan again with extra conditions, or null when it cannot be re-planned
+     * @param retained - true when the pushed predicates were returned to Spark as well
+     * @param aggregated - true when an aggregation was pushed into the scan
+     * @param runtimeFiltering - true to offer the scan to Spark's dynamic pruning (needs a replanner)
+     */
+    public FlightScan(Configuration configuration, Table table, Replanner replanner, boolean retained,
+            boolean aggregated, boolean runtimeFiltering) {
         LOGGER.debug("{}()", this.getClass().getName());
 
         this.configuration = configuration;
@@ -104,6 +127,7 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
         this.replanner = replanner;
         this.retained = retained;
         this.aggregated = aggregated;
+        this.runtimeFiltering = runtimeFiltering && replanner != null;
     }
 
     /**
@@ -143,6 +167,48 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
     }
 
     /**
+     * Returns the WHERE conditions added after Spark's push-down.
+     *
+     * @return rendered conditions, empty when none
+     */
+    public synchronized List<String> pushedConditions() {
+        return this.pushedConditions;
+    }
+
+    /**
+     * Returns the SQL renderer of the scanned table (its identifier quoting).
+     *
+     * @return the renderer
+     */
+    public SqlRenderer renderer() {
+        return this.table.renderer();
+    }
+
+    /**
+     * Adds WHERE conditions the server evaluates exactly and plans the scan again with them. The caller keeps
+     * evaluating the conditions in Spark, so the scan's rows stay correct whichever plan reads them. Conditions the
+     * scan already carries are skipped; an aggregated scan cannot take conditions.
+     *
+     * @param conditions rendered WHERE conditions over the scan's columns
+     * @return true when the scan was planned again
+     */
+    public synchronized boolean pushConditions(List<String> conditions) {
+        if (this.replanner == null || this.aggregated) {
+            return false;
+        }
+        List<String> all = new ArrayList<>(this.pushedConditions);
+        conditions.stream().filter(c -> !all.contains(c)).distinct().forEach(all::add);
+        if (all.size() == this.pushedConditions.size()) {
+            return false;
+        }
+        List<String> replan = new ArrayList<>(all);
+        replan.addAll(this.runtimeConditions);
+        this.replanner.replan(replan);
+        this.pushedConditions = List.copyOf(all);
+        return true;
+    }
+
+    /**
      * The integer columns Spark may prune with the join keys of a filtered other side; none when runtime filtering
      * is off or the table is smaller than {@code spark.flight.runtimeFilterMinRows}.
      *
@@ -151,7 +217,7 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
     @Override
     public NamedReference[] filterAttributes() {
         StructType schema = readSchema();
-        if (this.replanner == null || schema == null || tooSmallToPrune()) {
+        if (!this.runtimeFiltering || schema == null || tooSmallToPrune()) {
             return new NamedReference[0];
         }
         return Arrays.stream(schema.fields())
@@ -179,8 +245,8 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
      * @param filters IN filters on the columns of {@link #filterAttributes()}
      */
     @Override
-    public void filter(Filter[] filters) {
-        if (this.replanner == null) {
+    public synchronized void filter(Filter[] filters) {
+        if (!this.runtimeFiltering) {
             return;
         }
         List<String> conditions = new ArrayList<>();
@@ -194,7 +260,9 @@ public class FlightScan implements SupportsReportStatistics, SupportsRuntimeFilt
         }
         if (!conditions.isEmpty()) {
             LOGGER.debug("{}.filter(): {} runtime conditions", this.getClass().getName(), conditions.size());
-            this.replanner.replan(conditions);
+            List<String> replan = new ArrayList<>(this.pushedConditions);
+            replan.addAll(conditions);
+            this.replanner.replan(replan);
             this.runtimeConditions = List.copyOf(conditions);
         }
     }

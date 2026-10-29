@@ -120,4 +120,39 @@ class FlightScanTest {
         assertEquals(List.of("rendered " + in), scan.runtimeConditions());
         assertTrue(scan.retainsFilters());
     }
+
+    /**
+     * Conditions pushed after Spark's push-down re-plan the scan once (duplicates skipped) and stay when runtime
+     * filters re-plan it; an aggregated scan or one without a replanner refuses them, and without runtime filtering
+     * the scan offers no columns to Spark's dynamic pruning.
+     */
+    @Test
+    void pushConditionsReplansAndSurvivesRuntimeFilters() {
+        Table table = keyedTable(1L << 40);
+        when(table.canPushFilter(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+        when(table.toWhereClause(org.mockito.ArgumentMatchers.any(Filter.class))).thenReturn("rt");
+        List<List<String>> replans = new ArrayList<>();
+        FlightScan scan = new FlightScan(mock(Configuration.class), table, replans::add, false, false, true);
+
+        assertTrue(scan.pushConditions(List.of("a", "b", "a")));
+        assertEquals(List.of(List.of("a", "b")), replans);
+        assertTrue(!scan.pushConditions(List.of("b")), "nothing new");
+        assertEquals(1, replans.size());
+
+        scan.filter(new Filter[] {new In("id", new Object[] {1L})});
+        assertEquals(List.of("a", "b", "rt"), replans.get(1));
+        assertTrue(scan.pushConditions(List.of("c")));
+        assertEquals(List.of("a", "b", "c", "rt"), replans.get(2));
+        assertEquals(List.of("a", "b", "c"), scan.pushedConditions());
+
+        FlightScan noRuntime = new FlightScan(mock(Configuration.class), table, replans::add, false, false, false);
+        assertEquals(0, noRuntime.filterAttributes().length);
+        noRuntime.filter(new Filter[] {new In("id", new Object[] {1L})});
+        assertEquals(3, replans.size());
+        assertTrue(noRuntime.pushConditions(List.of("x")));
+
+        assertTrue(!new FlightScan(mock(Configuration.class), table, replans::add, false, true, false)
+                .pushConditions(List.of("x")));
+        assertTrue(!new FlightScan(mock(Configuration.class), table).pushConditions(List.of("x")));
+    }
 }

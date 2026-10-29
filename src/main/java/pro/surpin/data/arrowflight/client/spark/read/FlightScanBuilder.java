@@ -303,14 +303,16 @@ public final class FlightScanBuilder implements ScanBuilder, SupportsPushDownV2F
         Configuration config = this.configuration;
         Table scanTable = this.table;
         // Off by default: with retainPushedFilters=false the scan offers nothing to Spark's dynamic pruning either.
+        // The replanner also takes the conditions added after Spark's push-down (FlightLikePushdown).
         boolean runtimeFiltering = !"false".equalsIgnoreCase(sparkSetting(RETAIN_PUSHED_FILTERS, "false").trim());
-        FlightScan.Replanner replanner = aggregation != null || !runtimeFiltering ? null : extra -> {
+        FlightScan.Replanner replanner = aggregation != null ? null : extra -> {
             List<String> all = new ArrayList<>(whereParts);
             extra.forEach(condition -> all.add("(" + condition + ")"));
             scanTable.probe(String.join(" and ", all), columns, null, behavior);
             scanTable.initialize(config);
         };
-        return new FlightScan(this.configuration, this.table, replanner, this.retained, aggregation != null);
+        return new FlightScan(this.configuration, this.table, replanner, this.retained, aggregation != null,
+                runtimeFiltering);
     }
 
     /**

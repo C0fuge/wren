@@ -3,11 +3,13 @@ package pro.surpin.data.arrowflight.server;
 import pro.surpin.data.arrowflight.client.spark.FlightPushedCounts;
 import pro.surpin.data.arrowflight.client.spark.FlightSessionCatalog;
 import pro.surpin.data.arrowflight.client.spark.FlightSource;
+import pro.surpin.data.arrowflight.client.spark.read.FlightScan;
 
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan;
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -203,6 +205,69 @@ class SparkTpchQ1PushdownIntegrationTest {
         assertTrue(FlightPushedCounts.instance().apply(optimized).fastEquals(optimized),
                 "A second application must not change the plan");
         assertFalse(flight.schema().apply("count_order").nullable(), "count(*) must stay non-null");
+    }
+
+    /**
+     * TPC-H Q13 shape: a {@code [NOT] LIKE} with two wildcards inside is no connector predicate in Spark, so
+     * {@code FlightLikePushdown} adds it to the scan's WHERE clause after the push-down; Spark keeps the filter as
+     * well. Results equal the direct Parquet read; a pattern with {@code _} and the setting {@code false} keep the
+     * filter in Spark only.
+     */
+    @Test
+    void multiWildcardLikeIsSentToTheServerAndMatchesDirectParquet() {
+        String query = "SELECT l_orderkey, l_linenumber, l_comment FROM %s WHERE l_comment %s"
+                + " ORDER BY l_orderkey, l_linenumber";
+        // l_comment is "Debug row <n>"; the lower-case pattern checks that the server matches case-sensitively.
+        Map<String, String> sent = Map.of(
+                "NOT LIKE '%b%w 0%'", "like '%b%w 0%' escape",
+                "LIKE 'D%row 9%'", "like 'd%row 9%' escape",
+                "NOT LIKE 'debug%row%'", "like 'debug%row%' escape",
+                "LIKE '%e%g%' AND l_comment NOT LIKE '%w 1%'", "like '%e%g%' escape");
+        for (Map.Entry<String, String> entry : sent.entrySet()) {
+            String condition = entry.getKey();
+            Dataset<Row> flight = spark.sql(query.formatted("flight_lineitem", condition));
+            String scan = flightScanDescription(flight);
+            assertTrue(scan.contains(entry.getValue()), "The LIKE must reach the server:\n" + scan);
+            List<Row> expected = spark.sql(query.formatted("direct_lineitem", condition)).collectAsList();
+            assertFalse(expected.isEmpty(), "The query must select rows: " + condition);
+            assertEquals(expected, flight.collectAsList(), "Flight and direct results must match: " + condition);
+        }
+
+        Dataset<Row> underscore = spark.sql(query.formatted("flight_lineitem", "LIKE '%row _9%'"));
+        assertFalse(flightScanDescription(underscore).contains(" like "), "A '_' pattern must stay in Spark");
+        assertEquals(spark.sql(query.formatted("direct_lineitem", "LIKE '%row _9%'")).collectAsList(),
+                underscore.collectAsList(), "Flight and direct results must match with '_'");
+
+        spark.conf().set("spark.flight.likePushdown", "false");
+        try {
+            Dataset<Row> off = spark.sql(query.formatted("flight_lineitem", "NOT LIKE '%b%w 0%'"));
+            assertFalse(flightScanDescription(off).contains(" like "), "The setting must keep LIKE in Spark");
+        } finally {
+            spark.conf().unset("spark.flight.likePushdown");
+        }
+    }
+
+    /**
+     * Returns the server statement of the only Flight scan of a query (after the optimizer rules ran).
+     *
+     * @param query the query
+     * @return the lower-case scan description
+     */
+    private static String flightScanDescription(Dataset<Row> query) {
+        List<String> scans = new java.util.ArrayList<>();
+        query.queryExecution().optimizedPlan().foreach(new scala.runtime.AbstractFunction1<LogicalPlan,
+                scala.runtime.BoxedUnit>() {
+            @Override
+            public scala.runtime.BoxedUnit apply(LogicalPlan node) {
+                if (node instanceof DataSourceV2ScanRelation relation
+                        && relation.scan() instanceof FlightScan flightScan) {
+                    scans.add(flightScan.description().toLowerCase());
+                }
+                return scala.runtime.BoxedUnit.UNIT;
+            }
+        });
+        assertEquals(1, scans.size(), "Expected one Flight scan");
+        return scans.get(0);
     }
 
     /**

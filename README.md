@@ -27,6 +27,13 @@ it rewrites each merged count to `coalesce(sum(count), 0)`, the exact count. If 
 `spark.experimental.extraOptimizations` itself after reading a Flight table, it replaces the rule: append to the list
 instead.
 
+`LIKE` filters: Spark turns only `LIKE 'abc%'`, `'%abc'` and `'%abc%'` into connector predicates. A second rule
+(`FlightLikePushdown`, registered the same way) also sends other `[NOT] LIKE` filters on a string column to the
+server after Spark's push-down (e.g. TPC-H Q13's `o_comment NOT LIKE '%special%requests%'`), when the pattern has
+only literal characters and `%` (Spark's escapes resolved; patterns with `_` stay in Spark). Spark keeps evaluating
+the filter too, so results are unchanged; the scan is planned once more on the server. Not for scans with a pushed
+aggregation (Spark pushes those only when every filter translates). `spark.flight.likePushdown=false` turns it off.
+
 Status: Spark 3.5 (Scala 2.12, default) and Spark 4.0 (Scala 2.13), JDK 21. Backlog and decisions:
 `docs/STATUS.md`.
 

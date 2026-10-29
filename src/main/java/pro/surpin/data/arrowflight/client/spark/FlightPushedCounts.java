@@ -1,7 +1,6 @@
 package pro.surpin.data.arrowflight.client.spark;
 
 import pro.surpin.data.arrowflight.client.spark.read.FlightScan;
-import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.expressions.Alias;
 import org.apache.spark.sql.catalyst.expressions.Attribute;
 import org.apache.spark.sql.catalyst.expressions.AttributeReference;
@@ -19,14 +18,10 @@ import org.apache.spark.sql.catalyst.plans.logical.Project;
 import org.apache.spark.sql.catalyst.rules.Rule;
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation;
 import org.apache.spark.sql.types.DataTypes;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import scala.collection.JavaConverters;
 import scala.runtime.AbstractFunction1;
 import scala.runtime.AbstractPartialFunction;
 
-import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -44,11 +39,10 @@ import java.util.Set;
  *
  * <p>The rule has to run after the subquery's own scan push-down and before the outer query rewrites the subquery:
  * only Spark's {@code experimental.extraOptimizations} run there (at the end of the optimisation of each subquery).
- * {@link #register()} adds the rule to the active session's list once; the connector calls it whenever it resolves a
- * table.
+ * {@link FlightOptimizations#register()} adds the rule to the active session's list once; the connector calls it
+ * whenever it resolves a table.
  */
 public final class FlightPushedCounts extends Rule<LogicalPlan> {
-    private static final Logger LOGGER = LoggerFactory.getLogger(FlightPushedCounts.class);
     private static final FlightPushedCounts INSTANCE = new FlightPushedCounts();
 
     private FlightPushedCounts() {
@@ -61,55 +55,6 @@ public final class FlightPushedCounts extends Rule<LogicalPlan> {
      */
     public static FlightPushedCounts instance() {
         return INSTANCE;
-    }
-
-    /**
-     * Adds the rule to the extra optimizations of the active (else the default) session unless it is there already.
-     * Any failure is logged and leaves the session unchanged.
-     */
-    public static void register() {
-        scala.Option<SparkSession> session = SparkSession.getActiveSession();
-        if (session.isEmpty()) {
-            session = SparkSession.getDefaultSession();
-        }
-        if (!session.isEmpty()) {
-            register(session.get());
-        }
-    }
-
-    /**
-     * Adds the rule to the session's extra optimizations unless it is there already. Any failure is logged and leaves
-     * the session unchanged.
-     *
-     * @param session the Spark session
-     */
-    public static void register(SparkSession session) {
-        try {
-            // Reflection: SparkSession.experimental is not part of Spark 4's API class (only of its classic session).
-            Object experimental = session.getClass().getMethod("experimental").invoke(session);
-            synchronized (experimental) {
-                Method getter = experimental.getClass().getMethod("extraOptimizations");
-                List<Object> rules = new ArrayList<>(JavaConverters.seqAsJavaListConverter(
-                        (scala.collection.Seq<?>) getter.invoke(experimental)).asJava());
-                if (rules.stream().anyMatch(FlightPushedCounts.class::isInstance)) {
-                    return;
-                }
-                rules.add(INSTANCE);
-                Method setter = null;
-                for (Method method : experimental.getClass().getMethods()) {
-                    if ("extraOptimizations_$eq".equals(method.getName())) {
-                        setter = method;
-                    }
-                }
-                if (setter == null) {
-                    throw new NoSuchMethodException("extraOptimizations_$eq");
-                }
-                setter.invoke(experimental, JavaConverters.asScalaBufferConverter(rules).asScala().toList());
-            }
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            LOGGER.warn("Could not register {} in the Spark session; with ANSI mode a pushed avg in a correlated"
-                    + " scalar subquery may fail on Spark 3.5", FlightPushedCounts.class.getSimpleName(), e);
-        }
     }
 
     /**
