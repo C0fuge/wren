@@ -48,12 +48,17 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
     (a) Q1 explained (2026-10-28, see Log): Spark pushes arithmetic aggregates only with
         `spark.sql.ansi.enabled=true`; views and `FlightCatalog` behave the same. Q13 done 2026-10-29
         (`FlightLikePushdown`, see Log: 1.46x -> 0.75x of direct). Q5 plan fixed 2026-10-29 (`statistics.columnWidth`,
-        see Log): Flight and direct plans now have the same joins; Perf run 40802602269 (SF1, ANSI on, best of 3,
-        direct vs Flight ms): Q3 1602/1817, Q5 1942/3016, Q7 1666/1765, Q10 1416/1215. Next session starts here:
-        Q5's remaining 1.5x is reading `lineitem` (6M rows, 4 columns, no filter) over Flight vs Spark's local
-        vectorized Parquet read (same as Q3, which is ~1.1x: measure where Q5's extra time goes — per-stage times
-        from the Spark UI/event log of one run, `partition.size` 6 vs cores, server log; try
-        `spark.flight.retainPushedFilters=auto` so the filtered `orders` keys prune `lineitem` at run time);
+        see Log): Flight and direct plans now have the same joins. Decimal/null read path 2026-10-29 (see Log):
+        local SF1 Q5 1.87x -> 1.42x, Q3 1.37x -> 1.07x; CI Perf run 40806272377: all 22 at 0.79x of direct, Q5 1.28x,
+        Q11 1.51x (277 vs 418 ms). Next session starts here: Q5's remaining ~1.3x is the unfiltered full `lineitem` stream (6M rows, 2 bigint + 2 decimal columns;
+        identical joins and exchanges in both plans, `lineitem` shuffled before AQE broadcasts `orders`). Measure the
+        bare stream: e.g. a `perf`-tagged probe or TPC-H-style query reading those 4 columns without pushdown
+        (ANSI off keeps arithmetic sums in Spark) vs direct, with JFR on both JVMs (`TEST_JVM_OPTIONS=
+        "-XX:StartFlightRecording=filename=...,settings=profile"` now works; the server JVM line is in
+        `scripts/perf/tpch.sh`). This session's client JFR (Q5) showed mostly Spark's shuffle/row writing, plus
+        `LockSupport.unpark` / `Unsafe.getAndBitwiseAndInt` (gRPC/Flight stream handoff) and `ArrowBuf` bound checks
+        (`arrow.enable_unsafe_memory_access` is a candidate, client-side, JVM property); also check the endpoint count
+        for `lineitem` vs cores (`partition.size`);
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -284,3 +289,18 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   40802602269 (Q3/5/7/10, flight, SF1, ANSI on): Q7 1.33x -> 1.06x, Q5 1.63x -> 1.55x, Q3 1.13x, Q10 0.86x.
   Note: artifacts and job-log downloads through `gh api` are blocked by the session proxy (blob storage); the GitHub
   MCP `get_job_logs` tool works, and `scripts/perf/tpch.sh` runs locally (SF1 data via pip `tpchgen-cli`, ~5 min).
+- 2026-10-29 (session): S5 (a) Q5 read path — client JFR of Q5 showed `FlightArrowColumnVector.getDecimal` building a
+  `BigDecimal` per value (Spark's Parquet reader keeps precision <= 18 decimals as longs) and `isNullAt` reading the
+  validity buffer per value. Now: precision <= 18 at the vector's own scale reads the low 64 bits of Arrow's 128-bit
+  value into `Decimal.createUnsafe` when it is the sign extension and within `10^precision` (otherwise the old
+  BigDecimal path and its precision error); `isNullAt` skips the validity buffer when the batch has no nulls (null
+  count cached, refreshed by `FlightColumnarPartitionReader` after every reload of the reused root). Also fixed:
+  `TEST_JVM_OPTIONS` of `scripts/perf/tpch.sh` was dropped (the perf profile's empty `argLine` wins over
+  `-DargLine`), so CI Perf runs never got `-Xmx8g` (heap was ~3.4 GB); it now goes to the new `test.jvm.extra`
+  property. Tests: `FlightArrowColumnVectorTest` (compact decimals = BigDecimal path incl. signs/bounds/null; 2^100 and
+  out-of-precision values take the old path), `FlightColumnarPartitionReaderTest.seesNullsOfEachReloadedBatch`. Local
+  SF1 (ANSI on, parquet/flight, median of 3, all rows equal): Q5 4747 -> 3420 ms (1.87x -> 1.42x of direct), Q3 1.37x
+  -> 1.07x, Q1 0.14x, total 22 queries 0.83x of direct. Local `verify` (system `mvn`): 252 tests + 2 IT, 0 failures,
+  Checkstyle 0, SpotBugs 0. CI run 40806257438 green (4 jobs); Perf run 40806272377 (SF1, ANSI on, parquet/flight, all 22, rows equal,
+  first CI run with `-Xmx8g` actually applied; median ms direct/Flight): total 20806/16503 (0.79x); still slower Q5
+  1271/1630 (1.28x; Perf run 40802602269 had 1.55x), Q11 1.51x (small: 277/418), Q8 1.16x, Q4 1.11x, Q18 1.10x. Lock commit carries a `Co-Authored-By` trailer by mistake (no rewrite of `main`); later commits none.
