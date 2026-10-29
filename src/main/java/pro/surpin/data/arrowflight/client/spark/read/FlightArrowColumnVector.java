@@ -42,6 +42,7 @@ import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.unsafe.types.UTF8String;
 
 import java.math.BigDecimal;
+import java.nio.ByteOrder;
 
 /**
  * Spark column adapter backed by the Arrow vectors owned by a Flight stream.
@@ -54,11 +55,37 @@ import java.math.BigDecimal;
  * exposes only Spark's stable scalar {@link ColumnVector} API.</p>
  */
 final class FlightArrowColumnVector extends ColumnVector {
+    /** Arrow keeps decimals as 16-byte little-endian two's complement values in native memory. */
+    private static final boolean LITTLE_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN;
+    /** {@code 10^p} for {@code p <= 18}: the exclusive bound of an unscaled value of precision {@code p}. */
+    private static final long[] POWERS_OF_TEN = new long[Decimal.MAX_LONG_DIGITS() + 1];
+
+    static {
+        POWERS_OF_TEN[0] = 1L;
+        for (int i = 1; i < POWERS_OF_TEN.length; i++) {
+            POWERS_OF_TEN[i] = POWERS_OF_TEN[i - 1] * 10L;
+        }
+    }
+
     private final FieldVector vector;
+    /** Scale of a {@link DecimalVector}, or {@code -1} for other vectors. */
+    private final int decimalScale;
+    /** Null count of the vector's current batch (see {@link #batchLoaded()}). */
+    private int nullCount;
 
     FlightArrowColumnVector(FieldVector vector) {
         super(toSparkType(vector));
         this.vector = vector;
+        this.decimalScale = vector instanceof DecimalVector decimalVector ? decimalVector.getScale() : -1;
+        batchLoaded();
+    }
+
+    /**
+     * Refreshes what this adapter caches about the vector's contents. The stream reloads the same vectors for
+     * every batch, so the reader calls this after each load, before Spark reads the batch.
+     */
+    void batchLoaded() {
+        this.nullCount = this.vector.getNullCount();
     }
 
     /**
@@ -71,17 +98,18 @@ final class FlightArrowColumnVector extends ColumnVector {
 
     @Override
     public boolean hasNull() {
-        return this.vector.getNullCount() > 0;
+        return this.nullCount > 0;
     }
 
     @Override
     public int numNulls() {
-        return this.vector.getNullCount();
+        return this.nullCount;
     }
 
     @Override
     public boolean isNullAt(int rowId) {
-        return this.vector.isNull(rowId);
+        // Spark asks per value; batches without nulls (the common case) skip the validity buffer.
+        return this.nullCount > 0 && this.vector.isNull(rowId);
     }
 
     @Override
@@ -175,7 +203,18 @@ final class FlightArrowColumnVector extends ColumnVector {
         if (this.isNullAt(rowId)) {
             return null;
         }
-        BigDecimal value = require(DecimalVector.class).getObject(rowId);
+        DecimalVector decimalVector = require(DecimalVector.class);
+        if (LITTLE_ENDIAN && scale == this.decimalScale && precision <= Decimal.MAX_LONG_DIGITS()) {
+            // Spark's own Parquet reader keeps such decimals as longs too; this avoids a BigDecimal per value.
+            long offset = (long) rowId * DecimalVector.TYPE_WIDTH;
+            long low = decimalVector.getDataBuffer().getLong(offset);
+            long high = decimalVector.getDataBuffer().getLong(offset + Long.BYTES);
+            long bound = POWERS_OF_TEN[precision];
+            if (high == (low >> 63) && low > -bound && low < bound) {
+                return Decimal.createUnsafe(low, precision, scale);
+            }
+        }
+        BigDecimal value = decimalVector.getObject(rowId);
         return Decimal.apply(value, precision, scale);
     }
 

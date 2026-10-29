@@ -21,6 +21,7 @@ public final class FlightColumnarPartitionReader implements PartitionReader<Colu
     private final Schema expectedSchema;
 
     private ColumnarBatch current;
+    private FlightArrowColumnVector[] columns;
     private VectorSchemaRoot currentRoot;
     private boolean schemaValidated;
 
@@ -62,12 +63,15 @@ public final class FlightColumnarPartitionReader implements PartitionReader<Colu
         }
 
         if (this.current == null || this.currentRoot != root) {
-            ColumnVector[] columns = root.getFieldVectors().stream()
+            this.columns = root.getFieldVectors().stream()
                     .map(FlightArrowColumnVector::new)
-                    .toArray(ColumnVector[]::new);
-            this.current = new FlightOwnedColumnarBatch(columns, root.getRowCount());
+                    .toArray(FlightArrowColumnVector[]::new);
+            this.current = new FlightOwnedColumnarBatch(this.columns, root.getRowCount());
             this.currentRoot = root;
         } else {
+            for (FlightArrowColumnVector column : this.columns) {
+                column.batchLoaded();
+            }
             this.current.setNumRows(root.getRowCount());
         }
         return true;
@@ -85,6 +89,7 @@ public final class FlightColumnarPartitionReader implements PartitionReader<Colu
     public void close() {
         this.current = null;
         this.currentRoot = null;
+        this.columns = null;
         this.streamReader.close();
     }
 

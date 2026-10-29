@@ -34,6 +34,8 @@
             --add-opens=java.base/java.util=ALL-UNNAMED
             --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
             --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED</test.jvm.options>
+        <!-- Extra test JVM options appended to the above (scripts/perf/tpch.sh: TEST_JVM_OPTIONS). -->
+        <test.jvm.extra />
         <checkstyle.failOnViolation>true</checkstyle.failOnViolation>
         <netty.version>4.2.19.Final</netty.version>
         <jackson.version>2.21.8</jackson.version>
@@ -212,7 +214,7 @@
                 <version>3.0.0</version>
                 <configuration>
                     <excludedGroups>${excludedGroups}</excludedGroups>
-                    <argLine>@{argLine} ${test.jvm.options}</argLine>
+                    <argLine>@{argLine} ${test.jvm.options} ${test.jvm.extra}</argLine>
                 </configuration>
             </plugin>
             <plugin>
@@ -346,7 +348,7 @@
                 <version>3.0.0</version>
                 <configuration>
                     <excludedGroups>${excludedGroups}</excludedGroups>
-                    <argLine>@{argLine} ${test.jvm.options}</argLine>
+                    <argLine>@{argLine} ${test.jvm.options} ${test.jvm.extra}</argLine>
                 </configuration>
                 <executions>
                     <execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution>

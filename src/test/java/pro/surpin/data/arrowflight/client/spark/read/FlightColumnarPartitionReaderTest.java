@@ -15,7 +15,9 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -66,6 +68,52 @@ class FlightColumnarPartitionReaderTest {
 
             reader.close();
             verify(streamReader).close();
+        }
+    }
+
+    /**
+     * Verifies nulls are seen per batch when the stream reloads the same root: the adapters cache the null count.
+     *
+     * @throws Exception on mocked stream failure
+     */
+    @Test
+    void seesNullsOfEachReloadedBatch() throws Exception {
+        Schema schema = new Schema(List.of(new Field(
+                "value",
+                FieldType.nullable(new ArrowType.Int(32, true)),
+                List.of())));
+        FlightPartitionReader streamReader = mock(FlightPartitionReader.class);
+        when(streamReader.nextBatch()).thenReturn(true, true, true, false);
+
+        try (RootAllocator allocator = new RootAllocator();
+                VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+            IntVector vector = (IntVector) root.getVector("value");
+            vector.allocateNew(2);
+            vector.setSafe(0, 1);
+            vector.setSafe(1, 2);
+            root.setRowCount(2);
+            when(streamReader.currentBatch()).thenReturn(root);
+            FlightColumnarPartitionReader reader = new FlightColumnarPartitionReader(streamReader, schema);
+
+            reader.next();
+            ColumnVector column = reader.get().column(0);
+            assertFalse(column.hasNull());
+            assertFalse(column.isNullAt(1));
+
+            vector.setNull(1);
+            root.setRowCount(2);
+            reader.next();
+            assertTrue(column.hasNull());
+            assertEquals(1, column.numNulls());
+            assertFalse(column.isNullAt(0));
+            assertTrue(column.isNullAt(1));
+
+            vector.setSafe(1, 3);
+            root.setRowCount(2);
+            reader.next();
+            assertFalse(column.isNullAt(1));
+            assertEquals(3, column.getInt(1));
+            reader.close();
         }
     }
 }

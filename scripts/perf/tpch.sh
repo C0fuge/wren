@@ -64,4 +64,4 @@ grep -q "Server Arrow Flight SQL started" "$out/server.log" || { echo "server st
 cd "$root"
 "$mvn" --batch-mode --no-transfer-progress -Pperf test -Dtest=TpchPerfTest -Dsurefire.failIfNoSpecifiedTests=false \
   -Dperf.tpch.data="$data" -Dperf.flight.port="$port" -Dperf.runs="$runs" -Dperf.modes="$modes" \
-  -Dperf.queries="$queries" -Dperf.out="$out" -Dperf.sf="$sf" -Dperf.ansi="$ansi" ${TEST_JVM_OPTIONS:+"-DargLine=$TEST_JVM_OPTIONS"}
+  -Dperf.queries="$queries" -Dperf.out="$out" -Dperf.sf="$sf" -Dperf.ansi="$ansi" ${TEST_JVM_OPTIONS:+"-Dtest.jvm.extra=$TEST_JVM_OPTIONS"}
