@@ -50,15 +50,16 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         (`FlightLikePushdown`, see Log: 1.46x -> 0.75x of direct). Q5 plan fixed 2026-10-29 (`statistics.columnWidth`,
         see Log): Flight and direct plans now have the same joins. Decimal/null read path 2026-10-29 (see Log):
         local SF1 Q5 1.87x -> 1.42x, Q3 1.37x -> 1.07x; CI Perf run 40806272377: all 22 at 0.79x of direct, Q5 1.28x,
-        Q11 1.51x (277 vs 418 ms). Next session starts here: Q5's remaining ~1.3x is the unfiltered full `lineitem` stream (6M rows, 2 bigint + 2 decimal columns;
-        identical joins and exchanges in both plans, `lineitem` shuffled before AQE broadcasts `orders`). Measure the
-        bare stream: e.g. a `perf`-tagged probe or TPC-H-style query reading those 4 columns without pushdown
-        (ANSI off keeps arithmetic sums in Spark) vs direct, with JFR on both JVMs (`TEST_JVM_OPTIONS=
-        "-XX:StartFlightRecording=filename=...,settings=profile"` now works; the server JVM line is in
-        `scripts/perf/tpch.sh`). This session's client JFR (Q5) showed mostly Spark's shuffle/row writing, plus
-        `LockSupport.unpark` / `Unsafe.getAndBitwiseAndInt` (gRPC/Flight stream handoff) and `ArrowBuf` bound checks
-        (`arrow.enable_unsafe_memory_access` is a candidate, client-side, JVM property); also check the endpoint count
-        for `lineitem` vs cores (`partition.size`);
+        Q11 1.51x (277 vs 418 ms). Q5's remaining gap explained 2026-10-29
+        (see Log): not the stream (probe `p01` = bare `lineitem` stream at or below direct) but parallelism — the
+        server's default `endpointsPerServer=1` gives every Flight scan one Spark task per server node, so Q5's
+        shuffle of `lineitem` runs on one core (direct Parquet: 4 tasks). With `ENDPOINTS_PER_SERVER=4` Q5 is at
+        or below direct. Next session starts here: (i) read the CI Perf runs of this session (Log) and (ii)
+        make it the connector's job too, since a production cluster with N nodes still gives a big table only N
+        Spark partitions however many executor cores there are: try the existing `partition.byColumn` +
+        `partition.size` (+ `lowerBound`/`upperBound`) on `lineitem`/`orders` in `TpchPerfTest` (e.g. a
+        `perf.flight.options` system property) and compare with `ENDPOINTS_PER_SERVER`; then decide whether to
+        propose a server default (Open questions) or a connector default (e.g. split by the reported row count);
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -67,6 +68,13 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         variations.
 
 ## Open questions
+
+- For the maintainer / server (found 2026-10-29 by S5 a): each Flight scan gets one Spark task per server node
+  (kestrel's default `arrowflight.cluster.endpointsPerServer` / `FLIGHT_ENDPOINTS_PER_SERVER` = 1), so a big table
+  is read, and its rows shuffled, by as many Spark tasks as there are server nodes, whatever the executor count.
+  Locally (SF1, 4 cores) Q5 went from 1.33x of direct Parquet to 0.94x with 4 endpoints per server. What is the
+  setting on the production servers? A higher value there (e.g. the node's cores) helps every Spark job without a
+  connector change; the connector side (`partition.byColumn`, or a default split) is S5 (a)'s next step.
 
 - For the maintainer (FYI, 2026-10-29, S5 a): scans now report bytes scaled to the read columns' share of the row
   width by default (`statistics.columnWidth=true`), as Spark does for Parquet: narrow reads of tables up to roughly
