@@ -63,11 +63,15 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         fix in the connector for (2). (1)'s connector side measured the same day: a range split on `lineitem`
         (`partition.byColumn=l_orderkey`, `partition.size=4`, bounds 1..6000001; new `perf.flight.options` /
         `FLIGHT_OPTIONS` / Perf input `flight_options`) is as fast as 4 server endpoints (local Q5 1791 -> 1346 ms,
-        4 endpoints 1462); the hash split (no bounds) fails on the server (Open questions). Next session starts
-        here: one CI Perf run (all 22 + probes, default 1 endpoint) with range splits on the big tables
-        (`lineitem:...l_orderkey`, `orders:...o_orderkey`, maybe `partsupp`) to confirm the CI numbers, then decide
-        whether the connector should split big scans by default (it needs a numeric key and bounds per table, so
-        probably not — more likely a README section "Parallelism" recommending the server setting or the options);
+        4 endpoints 1462); the hash split (no bounds) fails on the server (Open questions). CI Perf run
+        40820294049 (1 endpoint, range splits of `lineitem`/`orders`): all 22 at 0.80x of direct, p02 1.18x (as with
+        4 endpoints). Next session starts here: a README section "Parallelism" (one Spark task per server endpoint;
+        raise the server's `endpointsPerServer`, or split a big table with `partition.byColumn` + `partition.size` +
+        bounds; hash split currently broken, Open questions) — a connector default split is not proposed (it needs a
+        numeric key and bounds per table); then S5 (b)/(c) or the write-path follow-up below;
+        Possible follow-up, not scheduled: the write path (`FlightDataWriter`, `FlightDataWriterFactory`) can
+        also pass Flight exceptions to Spark; route them through `SerializableErrors` too (with a Spark test of a
+        rejected write).
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -341,3 +345,29 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   p03 1.57x. CI Perf run 40813369789 (default 1 endpoint, probes + Q5): p01 1.63x, p02 1.39x, p03 1.49x, Q5 1.01x.
   So the bare stream is still slower than direct Parquet (next step). Tests: `TpchPerfHelpersTest` (query
   selection, stage task line). CI runs 40812658617 and 40813350841 green (4 jobs each).
+- 2026-10-29 (session): S5 (a) — the bare stream's cost (p01/p03 slower than direct) located, and a hang on read
+  errors fixed. Profiles (local SF1, 4 cores, server + Spark on one host, 4 endpoints; JFR on both JVMs via the new
+  `SERVER_JVM_OPTIONS` of `scripts/perf/tpch.sh` plus per-thread CPU from `/proc`): during p03 the host is
+  saturated; server DoGet threads ~134% CPU (DuckDB scan, native: almost no Java samples), server Netty ~27%, client
+  gRPC executor ~42% + Netty ~27%, Spark tasks only ~62%; direct Parquet gives Spark's tasks ~220%. The connector's
+  read path (`FlightArrowColumnVector`, `ArrowBuf` checks) is ~5% of the client samples, so
+  `arrow.enable_unsafe_memory_access` was not pursued; the server's `FLIGHT_ZERO_COPY_WRITES=true` changed p03 by
+  ~7% (noise level). So on one host Flight pays decode + transport + consume on the same cores; on a cluster the
+  first two run on the server nodes. Parallelism, connector side: `TpchPerfTest` takes `perf.flight.options`
+  (`table:key=value;...`, `*` = every table; `FLIGHT_OPTIONS` in the script, Perf input `flight_options`, recorded
+  in `env.txt`). Local SF1 (median of 5, ms Flight; 1 endpoint / range split of `lineitem` on `l_orderkey` in 4 /
+  4 server endpoints): p02 1516 / 952 / 905, Q5 1791 / 1346 / 1462 — the range split matches the server setting.
+  The hash split (no bounds) fails: the server does not parse `hash(...)` (Open questions), and that failure hung
+  the job: Arrow's `FlightRuntimeException` holds a non-serializable `CallStatus`, so Spark could not ship the task
+  failure, its serialization debugger then died on JDK 21 module access (test JVMs lack spark-submit's
+  `--add-opens`), the task thread died and the driver waited forever. Fix: `FlightPartitionReader` converts errors
+  whose cause chain holds a Flight exception into serializable copies (new `SerializableErrors`: class name, status
+  code, message and stack trace kept); test JVMs also open `java.base/sun.security.action` as spark-submit does.
+  Tests: `SerializableErrorsTest` (4), `SparkFlightSmokeTest.rejectedPartitionReadFailsTheJobWithTheServerError`
+  (job fails with the server's message and the Flight cause), `TpchPerfHelpersTest.flightOptionsPerTable`. Local
+  `verify` (system `mvn`): 259 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0. CI run 40820273823 green (4 jobs). Perf run
+  40820294049 (all 22 + probes, ANSI on, default 1 endpoint, range splits of `lineitem` and `orders` in 4) green, rows equal; median of 3, ms direct/Flight:
+  total 18460/14715 (0.80x), slower Q9 1.25x (1067/1335; `partsupp`/`part` not split), Q5 1.15x, Q8 1.15x, Q18
+  1.06x; probes p01 1.65x, p02 1.18x (1 endpoint, run 40813369789: 1.39x; 4 endpoints, run 40813359695: 1.15x), p03
+  1.59x.
+  The lock commit carries a `Co-Authored-By` trailer by mistake (no rewrite of `main`); later commits none.
