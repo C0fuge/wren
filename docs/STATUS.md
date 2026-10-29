@@ -47,11 +47,13 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
     `Perf` (manual; all files as artifact). Next:
     (a) Q1 explained (2026-10-28, see Log): Spark pushes arithmetic aggregates only with
         `spark.sql.ansi.enabled=true`; views and `FlightCatalog` behave the same. Q13 done 2026-10-29
-        (`FlightLikePushdown`, see Log: 1.46x -> 0.75x of direct). Remaining slower-than-direct queries (Perf run
-        40793985564, SF1, ANSI on): Q5 1.6x — its plan has two SortMergeJoins where direct has one (scan size
-        estimates for filtered `orders`/`customer`; compare `estimateStatistics` with the Parquet relation's, plans
-        in the artifacts of Perf runs 40779266604 / 40793985564). Q7 ~1.3x, Q3 1.1-1.3x. Next session starts here,
-        with Q5;
+        (`FlightLikePushdown`, see Log: 1.46x -> 0.75x of direct). Q5 plan fixed 2026-10-29 (`statistics.columnWidth`,
+        see Log): Flight and direct plans now have the same joins; Perf run 40802602269 (SF1, ANSI on, best of 3,
+        direct vs Flight ms): Q3 1602/1817, Q5 1942/3016, Q7 1666/1765, Q10 1416/1215. Next session starts here:
+        Q5's remaining 1.5x is reading `lineitem` (6M rows, 4 columns, no filter) over Flight vs Spark's local
+        vectorized Parquet read (same as Q3, which is ~1.1x: measure where Q5's extra time goes — per-stage times
+        from the Spark UI/event log of one run, `partition.size` 6 vs cores, server log; try
+        `spark.flight.retainPushedFilters=auto` so the filtered `orders` keys prune `lineitem` at run time);
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -60,6 +62,12 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         variations.
 
 ## Open questions
+
+- For the maintainer (FYI, 2026-10-29, S5 a): scans now report bytes scaled to the read columns' share of the row
+  width by default (`statistics.columnWidth=true`), as Spark does for Parquet: narrow reads of tables up to roughly
+  5-10x `spark.sql.autoBroadcastJoinThreshold` on disk can now be broadcast where they were shuffled before. Results
+  are unchanged; set `statistics.columnWidth=false` (per scan or as a `FlightCatalog` default) for the old plans. Say
+  if the default should be `false` instead.
 
 - For the maintainer (found 2026-10-28 by S5 a): on Spark 3.5 (`spark.sql.ansi.enabled=false` by default) no
   aggregate with `+ - * /` is pushed (TPC-H Q1 ~6x slower at SF1). Options: run production jobs with ANSI mode
@@ -260,3 +268,19 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   before the asynchronous query listener ran; failed once on 4.0 in CI run 40794869030): waits for the listener bus.
   Local `verify` (system `mvn`; `./mvnw` cannot download Maven in the session, use `MVN=mvn scripts/install-kestrel.sh`):
   245 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0; new tests green on 4.0. CI run 40795768365 green (4 jobs). Next: S5 (a) Q5.
+- 2026-10-29 (session): S5 (a) Q5 — the server's byte estimate covers whole Parquet files, while Spark narrows its own
+  Parquet relation under a projection by the row-width share of the read columns (`8 + sum(defaultSize)`), so
+  `customer` (14 MB at SF1, 2 of 8 columns read) was broadcast only when read directly and Flight's Q5 plan had an
+  extra SortMergeJoin. `FlightScanBuilder` now passes that share (`Table.widthShare`, not for pushed aggregations) to
+  `Table.setPushdownWidth`, which scales the reported bytes (rows unchanged). New scan option
+  `statistics.columnWidth` (default `true`; `false` = whole-file bytes as before); README "Scan statistics". Local Q5
+  at SF1: plans now have the same joins as direct (one SMJ orders-lineitem, AQE broadcasts it in both). Tests:
+  `TableTest` (width share, bytes scaling, aggregates), `ScanSelectivityTest` (builder on/off),
+  `SparkFilterStatisticsTest.prunedScanReportsItsShareOfTheRowWidth` (bytes = share of full, opt-out, a threshold
+  between the two sizes broadcasts only the narrowed scan). `SparkRuntimeFilterTest.offeredToSparksPruningOnlyWhenEnabled`
+  pins `statistics.columnWidth=false`: with the narrower estimate the tiny test table no longer looks worth pruning
+  to Spark (same rule as for Parquet). CI run 40802560434 failed on that test (3.5, 4.0); fixed. Local `verify`
+  (system `mvn`): 249 tests + 2 IT, 0 failures, Checkstyle 0, SpotBugs 0. CI run 40803194370 green (4 jobs). Perf run
+  40802602269 (Q3/5/7/10, flight, SF1, ANSI on): Q7 1.33x -> 1.06x, Q5 1.63x -> 1.55x, Q3 1.13x, Q10 0.86x.
+  Note: artifacts and job-log downloads through `gh api` are blocked by the session proxy (blob storage); the GitHub
+  MCP `get_job_logs` tool works, and `scripts/perf/tpch.sh` runs locally (SF1 data via pip `tpchgen-cli`, ~5 min).
