@@ -56,14 +56,18 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         `lineitem` runs on one core; `ENDPOINTS_PER_SERVER=4` fixes that (local Q5 1.33x -> 0.94x; CI all 22 at
         0.72x of direct, Q5 0.99x, Q11 0.84x). (2) The bare stream itself: probes `p01` (Q5's 4 `lineitem` columns)
         and `p03` (all 16) still take 1.3-1.6x of direct on CI runners, with 1 or 4 endpoints (local runs are
-        noisier: 0.76-2.07x). Next session starts here: (i) JFR of `p01`/`p03` on both JVMs
-        (`TEST_JVM_OPTIONS="-XX:StartFlightRecording=..."`, server line in `scripts/perf/tpch.sh`) with
-        `ENDPOINTS_PER_SERVER=4` to find the per-row cost (candidates from the last Q5 JFR: gRPC stream handoff
-        `LockSupport.unpark`, `ArrowBuf` bound checks -> try `-Darrow.enable_unsafe_memory_access=true` on the
-        client, string columns for `p03`); (ii) then the connector side of (1), since a cluster with N nodes still
-        gives a big table only N Spark partitions: try `partition.byColumn` + `partition.size` (+ bounds) on
-        `lineitem` in `TpchPerfTest` (e.g. a `perf.flight.options` property) against `ENDPOINTS_PER_SERVER`, then
-        propose a server default (Open questions) or a connector default;
+        noisier: 0.76-2.07x). (2) explained 2026-10-29 (see Log): with server and Spark on one 4-core host the
+        stream is CPU-bound on the host, and most of that CPU is outside Spark (server DoGet threads = DuckDB scan
+        ~1.3 cores, gRPC/Netty on both sides ~1 core, Spark tasks ~0.6) — the cost a cluster pays on the server
+        nodes, not the executors; the connector's own read path is a few % of the client's samples. Nothing left to
+        fix in the connector for (2). (1)'s connector side measured the same day: a range split on `lineitem`
+        (`partition.byColumn=l_orderkey`, `partition.size=4`, bounds 1..6000001; new `perf.flight.options` /
+        `FLIGHT_OPTIONS` / Perf input `flight_options`) is as fast as 4 server endpoints (local Q5 1791 -> 1346 ms,
+        4 endpoints 1462); the hash split (no bounds) fails on the server (Open questions). Next session starts
+        here: one CI Perf run (all 22 + probes, default 1 endpoint) with range splits on the big tables
+        (`lineitem:...l_orderkey`, `orders:...o_orderkey`, maybe `partsupp`) to confirm the CI numbers, then decide
+        whether the connector should split big scans by default (it needs a numeric key and bounds per table, so
+        probably not — more likely a README section "Parallelism" recommending the server setting or the options);
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -80,6 +84,13 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
   40813359695 (4 endpoints): all 22 queries at 0.72x of direct (run 40806272377 with 1: 0.79x). What is the
   setting on the production servers? A higher value there (e.g. the node's cores) helps every Spark job without a
   connector change; the connector side (`partition.byColumn`, or a default split) is S5 (a)'s next step.
+
+- For the server (found 2026-10-29 by S5 a): the connector's hash split (`partition.byColumn` without bounds;
+  default `partition.hashFunc=hash`) sends `where ((hash(col) % n + n) % n = i)`, which the server's SQL parser
+  (jOOQ) rejects (`ParserException: Unknown function`), so the hash split does not work against kestrel at
+  `kestrel.ref`; range splits (with `partition.lowerBound`/`upperBound`) work. Should the server accept `hash(...)`
+  (DuckDB has it), or should the connector change its default hash function (which one does the server parse)?
+  A connector default change needs the maintainer's go-ahead (option semantics).
 
 - For the maintainer (FYI, 2026-10-29, S5 a): scans now report bytes scaled to the read columns' share of the row
   width by default (`statistics.columnWidth=true`), as Spark does for Parquet: narrow reads of tables up to roughly

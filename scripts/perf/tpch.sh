@@ -10,9 +10,11 @@
 #   SF=1 RUNS=3 MODES=parquet,flight,jdbc QUERIES=all MVN=mvn scripts/perf/tpch.sh
 #   MODES=flight,catalog ANSI=true QUERIES=1 scripts/perf/tpch.sh   # catalog tables; spark.sql.ansi.enabled
 #   ENDPOINTS_PER_SERVER=4 QUERIES=probes,5 scripts/perf/tpch.sh  # server splits a scan into 4 endpoints
+#   FLIGHT_OPTIONS='lineitem:partition.byColumn=l_orderkey;lineitem:partition.size=4' QUERIES=probes scripts/perf/tpch.sh
 #
 # Needs JDK 21, python3 with pip (tpchgen-cli), and scripts/install-kestrel.sh run before (its checkout in
-# .kestrel). Extra test JVM options for Spark: TEST_JVM_OPTIONS (e.g. -Xmx8g).
+# .kestrel). Extra test JVM options for Spark: TEST_JVM_OPTIONS (e.g. -Xmx8g); for the server JVM:
+# SERVER_JVM_OPTIONS (e.g. -XX:StartFlightRecording=filename=target/perf/server.jfr,settings=profile).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -27,6 +29,7 @@ kestrel="${KESTREL_DIR:-$root/.kestrel}"
 out="${OUT:-$root/target/perf}"
 data="${DATA:-$root/target/tpch-sf$sf}"
 server_heap="${SERVER_HEAP:-4g}"
+read -r -a server_opts <<< "${SERVER_JVM_OPTIONS:-}"
 # Endpoints per node and query of the server (its FLIGHT_ENDPOINTS_PER_SERVER, default 1): the Spark partitions of
 # a scan with one server process. Empty: the server's setting.
 endpoints="${ENDPOINTS_PER_SERVER:-${FLIGHT_ENDPOINTS_PER_SERVER:-}}"
@@ -54,7 +57,7 @@ echo "endpoints per server: ${endpoints:-server default}" | tee -a "$out/server.
 # No TLS and no authentication: a local benchmark only. Netty (Arrow's allocator) needs java.nio opened.
 FLIGHT_ALLOW_INSECURE=true env ${endpoints:+FLIGHT_ENDPOINTS_PER_SERVER=$endpoints} java "-Xmx$server_heap" \
   --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  -Dio.netty.tryReflectionSetAccessible=true \
+  -Dio.netty.tryReflectionSetAccessible=true ${server_opts[@]+"${server_opts[@]}"} \
   -cp "$jar:$kestrel/flight-server/target/libs/*" pro.surpin.data.arrowflight.server.HadoopArrowFlightServer \
   --data-dir "$data" --localhost 127.0.0.1 --port "$port" --hosts 127.0.0.1 > "$out/server.log" 2>&1 &
 server=$!
@@ -69,4 +72,5 @@ grep -q "Server Arrow Flight SQL started" "$out/server.log" || { echo "server st
 cd "$root"
 "$mvn" --batch-mode --no-transfer-progress -Pperf test -Dtest=TpchPerfTest -Dsurefire.failIfNoSpecifiedTests=false \
   -Dperf.tpch.data="$data" -Dperf.flight.port="$port" -Dperf.runs="$runs" -Dperf.modes="$modes" \
-  -Dperf.queries="$queries" -Dperf.out="$out" -Dperf.sf="$sf" -Dperf.ansi="$ansi" ${TEST_JVM_OPTIONS:+"-Dtest.jvm.extra=$TEST_JVM_OPTIONS"}
+  -Dperf.queries="$queries" -Dperf.out="$out" -Dperf.sf="$sf" -Dperf.ansi="$ansi" \
+  -Dperf.flight.options="${FLIGHT_OPTIONS:-}" ${TEST_JVM_OPTIONS:+"-Dtest.jvm.extra=$TEST_JVM_OPTIONS"}

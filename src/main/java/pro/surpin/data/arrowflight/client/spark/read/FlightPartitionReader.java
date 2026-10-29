@@ -138,19 +138,26 @@ public class FlightPartitionReader implements PartitionReader<InternalRow> {
     }
 
     /**
-     * Moves the stream reader to the next non-empty batch.
+     * Moves the stream reader to the next non-empty batch. Errors leave with a serializable cause chain (see
+     * {@link SerializableErrors}): Spark ships them to the driver.
      * @return true when a batch is available
      * @throws IOException on Flight stream failure
      */
     private boolean advance() throws IOException {
-        if (!this.readerCreated) {
-            this.readerCreated = true;
-            this.reader = createReader(this.client, this.configuration, this.inputPartition);
-        }
-        if (this.reader == null || !this.reader.nextBatch()) {
-            this.root = null;
-            this.batchRowCount = 0;
-            return false;
+        try {
+            if (!this.readerCreated) {
+                this.readerCreated = true;
+                this.reader = createReader(this.client, this.configuration, this.inputPartition);
+            }
+            if (this.reader == null || !this.reader.nextBatch()) {
+                this.root = null;
+                this.batchRowCount = 0;
+                return false;
+            }
+        } catch (IOException e) {
+            throw SerializableErrors.asIOException(e);
+        } catch (RuntimeException e) {
+            throw SerializableErrors.asRuntimeException(e);
         }
         this.root = this.reader.root();
         this.batchRowCount = this.root.getRowCount();

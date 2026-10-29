@@ -31,6 +31,10 @@ on:
         description: "Server endpoints per node and query (FLIGHT_ENDPOINTS_PER_SERVER; empty: server default)"
         type: string
         default: ""
+      flight_options:
+        description: "Extra scan options of mode flight: table:key=value;... (table * = every table)"
+        type: string
+        default: ""
       kestrel_ref:
         description: "Server repository commit/branch (default: kestrel.ref)"
         type: string
@@ -77,6 +81,7 @@ jobs:
           QUERIES: ${{ inputs.queries }}
           ANSI: ${{ inputs.ansi }}
           ENDPOINTS_PER_SERVER: ${{ inputs.endpoints_per_server }}
+          FLIGHT_OPTIONS: ${{ inputs.flight_options }}
           OUT: ${{ github.workspace }}/target/perf
           TEST_JVM_OPTIONS: -Xmx8g
         run: |

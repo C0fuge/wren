@@ -33,6 +33,7 @@
             --add-opens=java.base/java.lang=ALL-UNNAMED
             --add-opens=java.base/java.util=ALL-UNNAMED
             --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+            --add-opens=java.base/sun.security.action=ALL-UNNAMED
             --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED</test.jvm.options>
         <!-- Extra test JVM options appended to the above (scripts/perf/tpch.sh: TEST_JVM_OPTIONS). -->
         <test.jvm.extra />

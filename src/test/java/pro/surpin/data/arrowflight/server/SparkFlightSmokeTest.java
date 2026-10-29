@@ -217,6 +217,42 @@ class SparkFlightSmokeTest {
                 "FlightSource.probeOptions() should fail fast complaining that host/user/password are mandatory");
     }
 
+    // ── 8. read errors reach the driver ───────────────────────────────────
+
+    /**
+     * A partition read the server rejects (here the default {@code hash} of {@code partition.byColumn}, which the
+     * server's SQL parser does not know) fails the job with the server's message and its Flight cause chain:
+     * Arrow's {@code FlightRuntimeException} is not serializable, and shipping it made the executor's task thread die
+     * (the job hung) or lost the cause.
+     */
+    @Test
+    @Order(8)
+    @Timeout(180)
+    void rejectedPartitionReadFailsTheJobWithTheServerError() {
+        Dataset<Row> df = spark.read()
+                .format("flight")
+                .option("host", host)
+                .option("port", String.valueOf(port))
+                .option("user", "test")
+                .option("password", "test")
+                .option("table", flightTable)
+                .option("partition.byColumn", "id")
+                .option("partition.size", "2")
+                .load();
+
+        Exception ex = assertThrows(Exception.class, df::collectAsList);
+        List<String> chain = new java.util.ArrayList<>();
+        for (Throwable t = ex; t != null && chain.size() < 20; t = t.getCause()) {
+            chain.add(t.getClass().getName() + ": " + t.getMessage());
+        }
+        String all = String.join("\n", chain);
+        assertTrue(all.contains("hash("), "the server's error must reach the driver:\n" + all);
+        assertTrue(chain.stream().anyMatch(c -> c.startsWith(
+                        "pro.surpin.data.arrowflight.client.spark.read.SerializableErrors$RemoteFlightError: "
+                                + "org.apache.arrow.flight.FlightRuntimeException")),
+                "the executor's exception (with its Flight cause) must reach the driver:\n" + all);
+    }
+
     // ── util ──────────────────────────────────────────────────────────────
 
     @SuppressWarnings("unchecked")

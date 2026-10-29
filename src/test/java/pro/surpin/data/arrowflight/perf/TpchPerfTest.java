@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * runs first as the reference), {@code perf.ansi} ({@code spark.sql.ansi.enabled} for every mode; unset: Spark's
  * default; Spark pushes aggregates over {@code + - * /} only in ANSI mode), {@code perf.runs} (3 timed runs per query and mode), {@code perf.queries} (all, or e.g. 1,6,14; {@code probes} or e.g. p1: probe scans, see {@link #queries}),
  * {@code perf.jdbc.partitions} (Spark JDBC partitions of the big tables, default the core count), {@code
- * perf.out} (target/perf).
+ * perf.flight.options} (extra scan options of mode flight, see {@link #flightOptions}), {@code perf.out} (target/perf).
  *
  * <p>Writes {@code times.csv} (every run), {@code summary.md} (median per query and mode, totals, ratios),
  * {@code env.txt}, {@code plans/<mode>/qNN.txt} (executed plans and the task count of every stage of the first run) and {@code errors.txt}. Every mode's rows are
@@ -180,6 +180,7 @@ class TpchPerfTest {
                     "scaleFactor=" + System.getProperty("perf.sf", "unknown"),
                     "data=" + tpch,
                     "flight=" + host() + ":" + port() + " schema=" + schema(),
+                    "flightOptions=" + System.getProperty("perf.flight.options", ""),
                     "modes=" + modes,
                     "ansi=" + spark.conf().get(ANSI_CONF),
                     "runs=" + runs,
@@ -207,6 +208,7 @@ class TpchPerfTest {
                         .option("user", user())
                         .option("password", password())
                         .option("table", schema() + "." + table)
+                        .options(flightOptions(System.getProperty("perf.flight.options", ""), table))
                         .load();
                 case "catalog" -> spark.table(CATALOG + "." + schema() + "." + table);
                 case "jdbc" -> jdbc(spark, table);
@@ -455,6 +457,34 @@ class TpchPerfTest {
         Arrays.stream(value.split(",")).map(String::trim).filter(m -> !m.isEmpty() && !modes.contains(m))
                 .forEach(modes::add);
         return modes;
+    }
+
+    /**
+     * Parses extra scan options of mode {@code flight}: {@code table:key=value} entries separated by {@code ;},
+     * table {@code *} for every table; e.g. {@code lineitem:partition.byColumn=l_orderkey;lineitem:partition.size=4}.
+     *
+     * @param value option list (empty: none)
+     * @param table table being registered
+     * @return the options for that table, in order
+     */
+    static Map<String, String> flightOptions(String value, String table) {
+        Map<String, String> options = new LinkedHashMap<>();
+        for (String entry : value.split(";")) {
+            String e = entry.trim();
+            if (e.isEmpty()) {
+                continue;
+            }
+            int colon = e.indexOf(':');
+            int equals = e.indexOf('=');
+            if (colon <= 0 || equals < colon + 2) {
+                throw new IllegalArgumentException("perf.flight.options entry is not table:key=value: " + e);
+            }
+            String target = e.substring(0, colon).trim();
+            if ("*".equals(target) || target.equalsIgnoreCase(table)) {
+                options.put(e.substring(colon + 1, equals).trim(), e.substring(equals + 1).trim());
+            }
+        }
+        return options;
     }
 
     /**

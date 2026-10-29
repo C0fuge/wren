@@ -12,6 +12,7 @@ import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -88,6 +89,20 @@ class TpchPerfHelpersTest {
         assertEquals(List.of("q01", "q06", "q14"), TpchPerfTest.queries("1, 6,14"));
         assertEquals(List.of("p01", "p02", "p03"), TpchPerfTest.queries("probes"));
         assertEquals(List.of("q05", "p01", "q13"), TpchPerfTest.queries("5,P1,q13"));
+    }
+
+    /** Extra Flight scan options: per table or {@code *}, in order, malformed entries rejected. */
+    @Test
+    void flightOptionsPerTable() {
+        String value = " lineitem:partition.byColumn=l_orderkey; *:result.mode = partial;LINEITEM:partition.size=4;";
+        Map<String, String> lineitem = TpchPerfTest.flightOptions(value, "lineitem");
+        assertEquals(List.of("partition.byColumn", "result.mode", "partition.size"), List.copyOf(lineitem.keySet()));
+        assertEquals("l_orderkey", lineitem.get("partition.byColumn"));
+        assertEquals("partial", lineitem.get("result.mode"));
+        assertEquals(Map.of("result.mode", "partial"), TpchPerfTest.flightOptions(value, "orders"));
+        assertTrue(TpchPerfTest.flightOptions("", "orders").isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> TpchPerfTest.flightOptions("partition.size=4", "x"));
+        assertThrows(IllegalArgumentException.class, () -> TpchPerfTest.flightOptions("x:=4", "x"));
     }
 
     /** Summary: medians, a failed query, totals over the queries that ran, ratios to the reference. */
