@@ -43,8 +43,10 @@ on:
 permissions:
   contents: read
 
+# Each dispatch runs on its own runner (they do not disturb each other's timings), so several runs may
+# go in parallel; one shared group would keep only one waiting run and cancel the others.
 concurrency:
-  group: perf
+  group: perf-${{ github.run_id }}
   cancel-in-progress: false
 
 env:
