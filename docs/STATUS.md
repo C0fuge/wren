@@ -65,13 +65,12 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
         `FLIGHT_OPTIONS` / Perf input `flight_options`) is as fast as 4 server endpoints (local Q5 1791 -> 1346 ms,
         4 endpoints 1462); the hash split (no bounds) fails on the server (Open questions). CI Perf run
         40820294049 (1 endpoint, range splits of `lineitem`/`orders`): all 22 at 0.80x of direct, p02 1.18x (as with
-        4 endpoints). Next session starts here: a README section "Parallelism" (one Spark task per server endpoint;
-        raise the server's `endpointsPerServer`, or split a big table with `partition.byColumn` + `partition.size` +
-        bounds; hash split currently broken, Open questions) — a connector default split is not proposed (it needs a
-        numeric key and bounds per table); then S5 (b)/(c) or the write-path follow-up below;
-        Possible follow-up, not scheduled: the write path (`FlightDataWriter`, `FlightDataWriterFactory`) can
-        also pass Flight exceptions to Spark; route them through `SerializableErrors` too (with a Spark test of a
-        rejected write).
+        4 endpoints). README section "Parallelism" done 2026-10-29 (see Log), with a fix found on the way: range splits
+        dropped rows outside the bounds and null keys, and repeated slices for narrow bounds (`CoveringRangeSplit`).
+        Next session starts here: the write-path follow-up below (small, finished in one session), then S5 (b)/(c).
+        Write path (next): `FlightDataWriter` / `FlightDataWriterFactory` can also pass Flight exceptions to Spark;
+        route them through `SerializableErrors` too, with a Spark test of a rejected write (e.g. a write into a
+        table the server refuses) that fails the job with the server's message instead of hanging.
     (a2) Spark 3.5 + ANSI Q17 failure: done 2026-10-28 (`FlightPushedCounts`, see Log). Possible follow-up, not
         scheduled: a full ANSI-on Perf run (all queries) to refresh the numbers with Q17 included;
     (b) JDBC baseline types BIGINT keys as `decimal(20,0)` (Spark JDBC + driver metadata); harmless for the
@@ -81,13 +80,23 @@ S5. **Perf.** TPC-H via Spark against a separate server process vs Spark reading
 
 ## Open questions
 
+- For the maintainer (FYI, 2026-10-29, S5 a; a correctness fix, say if the old behaviour is wanted anywhere):
+  range splits (`partition.byColumn` + `partition.lowerBound`/`upperBound`) used to read only
+  `lowerBound <= key < upperBound` (the client core's `PartitionBehavior` builds `lo <= c and c < hi` slices), so rows
+  outside the bounds and rows with a null key were silently missing, and bounds narrower than `partition.size`
+  values read the same `c = v` slice several times (duplicate rows). The connector now makes the first slice open
+  below (plus `c is null`) and the last open above, and collapses equal edges (`CoveringRangeSplit`), as Spark's JDBC
+  source does: the bounds only set the stride. A job that relied on the bounds as a filter now gets more rows; it
+  should filter explicitly. For the client core (forward): the same fix in `PartitionBehavior.calculatePredicates`
+  would let the connector drop its subclass.
+
 - For the maintainer / server (found 2026-10-29 by S5 a): each Flight scan gets one Spark task per server node
   (kestrel's default `arrowflight.cluster.endpointsPerServer` / `FLIGHT_ENDPOINTS_PER_SERVER` = 1), so a big table
   is read, and its rows shuffled, by as many Spark tasks as there are server nodes, whatever the executor count.
   Locally (SF1, 4 cores) Q5 went from 1.33x of direct Parquet to 0.94x with 4 endpoints per server; CI Perf run
   40813359695 (4 endpoints): all 22 queries at 0.72x of direct (run 40806272377 with 1: 0.79x). What is the
   setting on the production servers? A higher value there (e.g. the node's cores) helps every Spark job without a
-  connector change; the connector side (`partition.byColumn`, or a default split) is S5 (a)'s next step.
+  connector change; the connector side (range splits) is documented in README "Parallelism" (2026-10-29).
 
 - For the server (found 2026-10-29 by S5 a): the connector's hash split (`partition.byColumn` without bounds;
   default `partition.hashFunc=hash`) sends `where ((hash(col) % n + n) % n = i)`, which the server's SQL parser

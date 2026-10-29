@@ -88,6 +88,39 @@ SELECT l_returnflag, count(*) FROM flight.tpch.lineitem GROUP BY l_returnflag;
   what is visible. Names are matched exactly (case-sensitive); one namespace level only.
 - Read-only: `CREATE`/`ALTER`/`DROP` of namespaces and tables fail. Writes go through `format("flight")`.
 
+## Parallelism
+
+A scan without `partition.*` options gets one Spark task per Flight endpoint, and the server plans
+`arrowflight.cluster.endpointsPerServer` endpoints per server node (default 1). A big table is then read, and its
+rows shuffled, by as many tasks as there are server nodes, whatever the executor count (TPC-H SF1 on 4 cores: Q5
+1.33x of Spark reading the Parquet directly with 1 endpoint, 0.94x with 4). Two ways to more tasks:
+
+- Server side (every job profits): raise `endpointsPerServer` (`FLIGHT_ENDPOINTS_PER_SERVER`), e.g. to the node's
+  cores.
+- Per scan: a range split, one Spark task per slice, each slice a query of its own on the server:
+
+```scala
+spark.read.format("flight") /* host, port, user, password */
+  .option("table", "tpch.lineitem")
+  .option("partition.byColumn", "l_orderkey")
+  .option("partition.size", "8")
+  .option("partition.lowerBound", "1").option("partition.upperBound", "6000001")
+  .load()
+```
+
+  The column must be an integer, floating-point, decimal, date or timestamp column; the bounds only set the stride
+  (as in Spark's JDBC source): the first slice also reads the keys below its upper edge and the null keys, the last
+  the keys from its lower edge on, so every row is read once whatever the bounds. Bounds narrower than `size`
+  values give fewer slices. Pick bounds close to the key's real range (the server's
+  `arrowflight.table_statistics`, or `min`/`max`), or the outer slices get most rows. Alternatively
+  `partition.predicates` (SQL conditions separated by `;`, `|` or `,`, so none inside a condition; or one
+  `partition.predicate.<name>` option per condition) gives one task per condition; the conditions must then cover
+  every row once themselves.
+- `partition.byColumn` without bounds asks for a hash split (`partition.hashFunc`, default `hash`), which the server
+  does not parse at the moment: the scan fails (see `docs/STATUS.md`, Open questions).
+
+No default split is applied: it needs a suitable key and its bounds per table.
+
 ## Scan statistics
 
 Each scan reports the server's size estimate (Parquet input bytes and rows) to Spark; a pushed global aggregate

@@ -3,6 +3,7 @@ package pro.surpin.data.arrowflight.client.spark;
 import pro.surpin.data.arrowflight.client.Configuration;
 import pro.surpin.data.arrowflight.client.write.WriteProtocol;
 import pro.surpin.data.arrowflight.client.write.PartitionBehavior;
+import pro.surpin.data.arrowflight.client.spark.read.CoveringRangeSplit;
 import pro.surpin.data.arrowflight.client.model.Table;
 import pro.surpin.data.arrowflight.client.write.WriteBehavior;
 import pro.surpin.data.arrowflight.client.spark.read.FlightScanBuilder;
@@ -140,7 +141,7 @@ public class FlightTable implements org.apache.spark.sql.connector.catalog.Table
         Table scanTable = this.table.newScan();
 
         //the partitioning behavior
-        PartitionBehavior partitionBehavior = new PartitionBehavior(
+        PartitionBehavior partitionBehavior = new CoveringRangeSplit(
             options.getOrDefault(FlightTable.PARTITION_HASH_FUN, "hash"), options.getOrDefault(FlightTable.PARTITION_BY_COLUMN, ""),
             Integer.parseInt(options.getOrDefault(FlightTable.PARTITION_SIZE, "6")),
             options.getOrDefault(FlightTable.PARTITION_LOWER_BOUND, ""), options.getOrDefault(FlightTable.PARTITION_UPPER_BOUND, ""),
